@@ -32,6 +32,9 @@ Control control(const Command& command) {
     case Action::harmony: return {Parameter::harmony, 0, command.pattern};
     case Action::voice: return {Parameter::voice, value};
     case Action::rhythm: return {Parameter::rhythm, value};
+    case Action::chords: return {Parameter::chords, 0, command.pattern};
+    case Action::chord_voice: return {Parameter::chord_voice, value};
+    case Action::chord_bars: return {Parameter::chord_bars, value};
     case Action::mix: {
       const char* names[] = {"kick", "clap", "hats", "bass", "lead", "pad"};
       for (unsigned i = 0; i < 6; ++i)
@@ -88,6 +91,24 @@ std::vector<Command> parse_commands(const std::string& text) {
       if (length > 0 && !rampable(command.action)) throw std::runtime_error("Ramp supports mix, volume, tempo, filter, and delay");
       command.bar = bar; command.duration = length;
       commands.push_back(command);
+    } else if (name == "chord-voice") {
+      if (value != "pad" && value != "keys") throw std::runtime_error("Use chord-voice pad|keys");
+      commands.push_back({Action::chord_voice, {}, value == "keys" ? 1.f : 0.f});
+    } else if (name == "chords") {
+      std::uint64_t pattern = UINT64_C(1) << 32;
+      if (value != "sustain") {
+        pattern = 0;
+        std::istringstream args(value);
+        std::string token;
+        for (unsigned i = 0; i < 16; ++i) {
+          if (!(args >> token)) throw std::runtime_error("Chords need 16 steps: 0 rest, 1 soft, 2 normal, 3 accent");
+          const auto level = number_in_range(token, 0, 3);
+          if (std::floor(level) != level) throw std::runtime_error("Chord steps must be integers 0..3");
+          pattern |= std::uint64_t(level) << (i * 2);
+        }
+        if (args >> token) throw std::runtime_error("Chords need exactly 16 steps");
+      }
+      commands.push_back({Action::chords, {}, 0, -1, 0, pattern});
     } else if (name == "voice" || name == "rhythm") {
       const std::array<std::string, 3> choices = name == "voice"
         ? std::array<std::string, 3>{"pluck", "wide", "soft"}
@@ -103,17 +124,18 @@ std::vector<Command> parse_commands(const std::string& text) {
       for (unsigned i = 0; i < steps; ++i) {
         if (!(args >> token)) throw std::runtime_error("Expected " + std::to_string(steps) + " pattern steps");
         const auto degree = (name == "melody" || name == "bassnotes") && token == "-" ? 15.f
-          : number_in_range(token, 0, name == "melody" ? 7 : name == "harmony" ? 6 : name == "bassnotes" ? 2 : 1);
+          : name == "melody" && token == "~" ? 14.f
+          : number_in_range(token, 0, name == "melody" ? 7 : name == "harmony" ? 6 : name == "bassnotes" ? 4 : 1);
         if (std::floor(degree) != degree) throw std::runtime_error("Pattern steps must be whole numbers (or - for melody rests)");
         pattern |= std::uint64_t(degree) << (i * (name == "bassline" ? 1 : 4));
       }
       if (args >> token) throw std::runtime_error("Too many pattern steps");
       commands.push_back({name == "melody" ? Action::melody : name == "bassline" ? Action::bassline
         : name == "harmony" ? Action::harmony : Action::bassnotes, {}, 0, -1, 0, pattern});
-    } else if (name == "root" || name == "quantize") {
-      const auto number = number_in_range(value, name == "root" ? 36 : 1, name == "root" ? 60 : 64);
+    } else if (name == "root" || name == "quantize" || name == "chord-bars") {
+      const auto number = number_in_range(value, name == "root" ? 36 : 1, name == "root" ? 60 : name == "chord-bars" ? 8 : 64);
       if (std::floor(number) != number) throw std::runtime_error("Root and quantize require whole numbers");
-      commands.push_back({name == "root" ? Action::root : Action::quantize, {}, number});
+      commands.push_back({name == "root" ? Action::root : name == "chord-bars" ? Action::chord_bars : Action::quantize, {}, number});
     } else if (name == "style") {
       if (value.empty() || value.size() > 2048) throw std::runtime_error("Style requires 1–2048 characters");
       commands.push_back({Action::style, value});
@@ -157,7 +179,8 @@ void validate_controls(const std::vector<Command>& commands, bool ai, bool watch
         command.action == Action::radio || command.action == Action::next))
       throw std::runtime_error("Scores, patterns, root, and cancel require --source synth");
     if (!synth && (command.action == Action::harmony || command.action == Action::bassnotes ||
-        command.action == Action::voice || command.action == Action::rhythm))
+        command.action == Action::voice || command.action == Action::rhythm ||
+        command.action == Action::chords || command.action == Action::chord_voice || command.action == Action::chord_bars))
       throw std::runtime_error("Harmony, bass notes, voices, and rhythm require --source synth");
     if (command.action == Action::cancel && commands.size() != 1)
       throw std::runtime_error("Use cancel on its own");
@@ -190,7 +213,8 @@ void apply_control(const Command& c, Source& source, Engine& engine) {
     case Action::mute: engine.mute(true); break;
     case Action::unmute: engine.mute(false); break;
     case Action::melody: case Action::bassline: case Action::root: case Action::harmony:
-    case Action::bassnotes: case Action::voice: case Action::rhythm: source.synth_control(control(c)); break;
+    case Action::bassnotes: case Action::voice: case Action::rhythm: case Action::chords:
+    case Action::chord_voice: case Action::chord_bars: source.synth_control(control(c)); break;
     default: break;
   }
 }
@@ -230,9 +254,12 @@ const char* command_help() {
          "  delay 0..1        tempo-synced stereo echo level\n"
          "  temperature .1..2 AI sampling temperature\n"
          "  tempo 30..240     synth/demo BPM\n"
-         "  melody STEPS     synth: 16 chord degrees 0..7, or - for rests\n"
+         "  melody STEPS     16 chord degrees 0..7, - rest, ~ hold previous note\n"
          "  bassline STEPS   synth: 16 steps, 0 (rest) or 1 (note)\n"
-         "  bassnotes STEPS  16 steps: - rest, 0 root, 1 fifth, 2 octave\n"
+         "  bassnotes STEPS  - rest; 0 root, 1 fifth, 2 octave, 3 third, 4 seventh\n"
+         "  chords STEPS     16 steps: 0 rest, 1 soft, 2 normal, 3 accent; or sustain\n"
+         "  chord-voice pad|keys  sustained pad or percussive electric keys\n"
+         "  chord-bars 1..8  bars per chord in the harmony pattern\n"
          "  harmony CHORDS   8 minor-key degrees 0..6, four bars each\n"
          "  voice pluck|wide|soft  lead timbre (smoothly crossfaded)\n"
          "  rhythm steady|drive|build  percussion pattern\n"

@@ -9,10 +9,13 @@ class RadioDirector {
  public:
   explicit RadioDirector(std::uint32_t seed = std::random_device{}()) : random_(seed) {}
   Score next();
+  void program(const std::string& name);
   const std::string& chapter() const { return chapter_; }
  private:
   std::mt19937 random_;
   unsigned chapter_index_ = 0;
   std::string chapter_;
+  bool french_house_ = false;
+  Score next_house();
 };
 }  // namespace music

@@ -21,7 +21,7 @@ volatile std::sig_atomic_t interrupted = 0;
 void on_signal(int) { interrupted = 1; }
 
 struct Options {
-  std::string source = "demo", style, model_dir = "models", record, watch;
+  std::string source = "demo", style, model_dir = "models", record, watch, program = "trance";
   float duration = 0, volume = 0.25f, stats_every = 10;
   int stream_fd = -1;
   bool no_audio = false, no_input = false, offline = false, radio = false;
@@ -32,7 +32,8 @@ void usage() {
     "Usage: ai-music [options]\n"
     "  --source synth|demo|magenta  live synth, demo (default), or actual AI\n"
     "  --style TEXT            synth: house/trance; demo: ambient/pulse; AI: text\n"
-    "  --radio                 progressive trance program at 132 BPM (synth)\n"
+    "  --radio                 automatic synth arrangement\n"
+    "  --program trance|french-house  fixed tempo: 132 / 124 BPM\n"
     "  --model-dir PATH        downloaded model root (default: models)\n"
     "  --record PATH.wav       stream stereo PCM16 to disk; rotate hourly\n"
     "  --watch PATH            load controls/a new DJ score when you save it\n"
@@ -65,6 +66,7 @@ Options options(int argc, char** argv) {
     else if (name == "--offline") { result.offline = true; result.no_audio = true; }
     else if (name == "--no-input") result.no_input = true;
     else if (name == "--radio") result.radio = true;
+    else if (name == "--program") result.program = next();
     else if (name == "--stream-fd") {
       const auto fd = music::number_in_range(next(), 3, 1024);
       if (int(fd) != fd) throw std::runtime_error("Stream descriptor must be an integer");
@@ -78,6 +80,7 @@ Options options(int argc, char** argv) {
     throw std::runtime_error("Use a .wav recording path");
   if (result.style.size() > 2048) throw std::runtime_error("Style is too long (2048 characters maximum)");
   if (result.radio && result.source != "synth") throw std::runtime_error("Use --radio with --source synth");
+  if (result.program != "trance" && result.program != "french-house") throw std::runtime_error("Program must be trance or french-house");
   if (result.offline && (result.source != "magenta" || result.record.empty() || result.duration <= 0))
     throw std::runtime_error("Use --offline with --source magenta, --record PATH.wav, and a positive --duration");
   return result;
@@ -135,11 +138,15 @@ int run(const Options& opts) {
   if (opts.stream_fd >= 0) stream = std::make_unique<music::StreamOutput>(opts.stream_fd);
   music::Engine engine(*source, recorder.get(), stream.get());
   engine.volume(opts.volume);
-  if (opts.radio) { source->tempo(132); engine.tempo(132); }
+  if (opts.radio) {
+    const auto bpm = opts.program == "french-house" ? 124.f : 132.f;
+    source->tempo(bpm); engine.tempo(bpm);
+  }
   bool quit = false;
   bool radio_enabled = opts.radio, radio_waiting = false, custom_score = false;
   std::uint64_t radio_revision = 0;
   music::RadioDirector radio;
+  radio.program(opts.program);
   auto next_chapter = [&]() {
     const auto score = radio.next();
     if (!engine.score(score)) throw std::runtime_error("Radio score queue is full");

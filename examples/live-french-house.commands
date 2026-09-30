@@ -1,0 +1,39 @@
+# Original French-house sketch. Run with --source synth --watch this file.
+# A 32-bar arrangement; the final groove continues until another score arrives.
+quantize 4
+at 0 style house
+at 0 tempo 124
+at 0 drums on
+at 0 voice pluck
+at 0 rhythm steady
+at 0 chord-voice keys
+at 0 chord-bars 1
+at 0 harmony 0 0 3 3 6 6 2 2
+at 0 chords 0 0 3 0 0 1 2 0 0 0 3 0 0 2 0 1
+at 0 bassnotes 0 - 0 2 - 3 1 - 0 - 2 4 - 1 0 -
+at 0 melody - - 2 ~ - - 3 - - - 2 ~ - 1 - -
+ramp 0 2 mix kick .86
+ramp 0 2 mix clap .3
+ramp 0 2 mix hats .19
+ramp 0 2 mix bass .68
+ramp 0 2 mix pad .46
+ramp 0 2 mix lead .2
+ramp 0 2 filter 5000
+ramp 0 2 delay .14
+at 7 bassnotes 0 - 0 2 - 1 3 - 0 - 2 - 4 1 0 2
+at 8 bassnotes 0 - 0 2 - 3 1 - 0 - 2 4 - 1 0 -
+at 8 melody - - 3 - - 2 ~ - - - 4 ~ - 3 - -
+at 8 chords 0 0 3 0 0 0 2 0 0 1 3 0 0 2 0 0
+at 16 mix kick 0
+at 16 mix clap 0
+ramp 16 2 mix bass .24
+ramp 16 4 filter 1000
+ramp 20 4 filter 7500
+ramp 20 3 mix hats .3
+at 23 mix hats 0
+at 24 mix kick .9
+at 24 mix clap .33
+at 24 mix hats .25
+at 24 mix bass .7
+at 24 melody - - 2 ~ - - 3 - - - 2 ~ - 1 - -
+ramp 28 4 filter 5000

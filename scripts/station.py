@@ -15,17 +15,18 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class Station:
-    def __init__(self, binary, watch, volume=.4):
+    def __init__(self, binary, watch, volume=.4, program="french-house"):
         self.watch = watch
         self.lock = threading.Lock()
         self.commands_lock = threading.Lock()
         self.listeners = set()
-        self.status = {"chapter": "Starting the station", "error": ""}
+        self.status = {"chapter": "Starting the station", "error": "", "program": program}
         self.logs = deque(maxlen=40)
         read_fd, write_fd = os.pipe()
         try:
             self.process = subprocess.Popen([
                 str(binary), "--source", "synth", "--radio", "--volume", str(volume),
+                "--program", program,
                 "--watch", str(watch), "--no-audio", "--stats-every", ".5",
                 "--stream-fd", str(write_fd),
             ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -225,12 +226,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--volume", type=float, default=.4)
+    parser.add_argument("--program", choices=["french-house", "trance"], default="french-house")
     parser.add_argument("--binary", type=Path, default=ROOT / "build" / "ai-music")
     parser.add_argument("--watch", type=Path, default=ROOT / "live" / "current.commands")
     args = parser.parse_args()
     if not 0 <= args.volume <= 1:
         parser.error("Volume must be between 0 and 1")
-    station = Station(args.binary.resolve(), args.watch.resolve(), args.volume)
+    station = Station(args.binary.resolve(), args.watch.resolve(), args.volume, args.program)
     try:
         server = serve(station, args.port)
         print(f"Listen and mix: http://127.0.0.1:{args.port} — click Listen. Ctrl-C stops the station.", flush=True)

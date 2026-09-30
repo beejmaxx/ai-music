@@ -35,6 +35,8 @@ class Source {
   virtual void mix(const std::string&, float) { throw std::runtime_error("This source has no instrument mixer"); }
   // Synth transport and prevalidated controls; safe in the audio callback.
   virtual double beat() const noexcept { return 0; }
+  // Audio thread only: split rendering before the next sequencer note trigger.
+  virtual std::size_t frames_to_tick() const noexcept { return block_size; }
   virtual void synth_control(const Control&) noexcept {}
   virtual float synth_value(Parameter) const noexcept { return 0; }
   virtual SourceMetrics metrics() { return {}; }

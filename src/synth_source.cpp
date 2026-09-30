@@ -40,6 +40,8 @@ class SynthSource final : public Source {
     const bool trance = trance_.load(std::memory_order_relaxed);
     const bool percussion = drums_.load(std::memory_order_relaxed);
     const auto voice_type = custom_voice_.load(std::memory_order_relaxed) ? voice_.load() : trance ? 1 : 0;
+    const bool sustain_chords = chord_steps_.load(std::memory_order_relaxed) >> 32;
+    const bool keys = keys_.load(std::memory_order_relaxed);
     std::array<float, 6> levels;
     for (std::size_t j = 0; j < levels.size(); ++j) levels[j] = levels_[j].load(std::memory_order_relaxed);
 
@@ -79,7 +81,7 @@ class SynthSource final : public Source {
       advance(bass_phase_, bass_increment_);
       const auto bass = (.8 * std::sin(tau * bass_phase_) + .2 * saw(bass_phase_, bass_increment_)) * bass_env_ * .65;
 
-      const auto lead_target = lead_on_ && step_phase_ < (trance ? .5 : .35) ? 1. : 0.;
+      const auto lead_target = lead_on_ && (lead_held_ || step_phase_ < (trance ? .5 : .35)) ? 1. : 0.;
       lead_env_ += (lead_target - lead_env_) * (lead_target ? .007 : .0011);
       double lead_l = 0, lead_r = 0;
       constexpr double detunes[] = {.996, 1., 1.004};
@@ -95,9 +97,17 @@ class SynthSource final : public Source {
       lead_l *= lead_env_ * .45; lead_r *= lead_env_ * .45;
 
       double pad_l = 0, pad_r = 0;
-      for (std::size_t j = 0; j < 3; ++j) {
+      keys_blend_ += ((keys ? 1. : 0.) - keys_blend_) * .002;
+      const auto chord_target = sustain_chords ? 1. : chord_velocity_ * std::exp(-chord_age_ * 13)
+        * (1 - std::exp(-chord_age_ * 1100));
+      chord_env_ += (chord_target - chord_env_) * .008;
+      for (std::size_t j = 0; j < 4; ++j) {
         advance(pad_phase_[j], pad_increment_[j]);
-        const auto voice = std::sin(tau * pad_phase_[j]) * .22;
+        const auto angle = tau * pad_phase_[j];
+        const auto sine = std::sin(angle);
+        const auto tine = std::sin(angle + (.25 + .9 * chord_env_) * std::sin(2 * angle));
+        const auto voice = ((1 - keys_blend_) * sine + keys_blend_ * tine) * .22 * chord_env_
+          * (j == 3 ? keys_blend_ * .75 : 1);
         pad_l += voice * (j == 0 ? .9 : .6);
         pad_r += voice * (j == 2 ? .9 : .6);
       }
@@ -109,6 +119,7 @@ class SynthSource final : public Source {
       kick_age_ = std::min(kick_age_ + 1. / sample_rate, 2.);
       clap_age_ = std::min(clap_age_ + 1. / sample_rate, 2.);
       hat_age_ = std::min(hat_age_ + 1. / sample_rate, 2.);
+      chord_age_ = std::min(chord_age_ + 1. / sample_rate, 2.);
       step_phase_ += step_increment;
     }
     beat_.store((double(step_) + step_phase_) / 4, std::memory_order_relaxed);
@@ -131,6 +142,11 @@ class SynthSource final : public Source {
   const char* name() const override { return "house/trance synth (live procedural generation, not AI)"; }
   bool is_synth() const override { return true; }
   double beat() const noexcept override { return beat_.load(std::memory_order_relaxed); }
+  std::size_t frames_to_tick() const noexcept override {
+    const auto distance = (step_phase_ >= 1 ? 2. : 1.) - step_phase_;
+    const auto increment = bpm_.load(std::memory_order_relaxed) * 4 / (60. * sample_rate);
+    return std::max<std::size_t>(1, std::size_t(std::ceil(distance / increment)));
+  }
   void synth_control(const Control& control) noexcept override {
     const auto parameter = control.parameter;
     if (parameter >= Parameter::kick && parameter <= Parameter::pad) {
@@ -151,6 +167,9 @@ class SynthSource final : public Source {
       case Parameter::harmony: harmony_.store(control.pattern); break;
       case Parameter::voice: voice_.store(int(control.value)); custom_voice_.store(true); break;
       case Parameter::rhythm: rhythm_.store(int(control.value)); break;
+      case Parameter::chords: chord_steps_.store(control.pattern); break;
+      case Parameter::chord_voice: keys_.store(control.value != 0); break;
+      case Parameter::chord_bars: chord_bars_.store(unsigned(control.value)); break;
       default: break;
     }
   }
@@ -168,6 +187,8 @@ class SynthSource final : public Source {
 
  private:
   void trigger(bool trance) {
+    const auto chord_level = (chord_steps_.load(std::memory_order_relaxed) >> (2 * (step_ % 16))) & 3;
+    if (chord_level) { chord_age_ = 0; chord_velocity_ = chord_level == 1 ? .55 : chord_level == 2 ? .8 : 1; }
     if (step_ % 4 == 0) { kick_age_ = 0; kick_phase_ = 0; }
     const bool fill = step_ % 256 >= 252;
     const auto rhythm = rhythm_.load(std::memory_order_relaxed);
@@ -178,12 +199,13 @@ class SynthSource final : public Source {
     }
 
     constexpr int roots[] = {45, 47, 48, 50, 52, 41, 43};
-    const auto chord = (harmony_.load(std::memory_order_relaxed) >> (4 * ((step_ / 64) % 8))) & 15;
+    const auto chord = (harmony_.load(std::memory_order_relaxed) >> (4 * ((step_ / (16 * chord_bars_.load())) % 8))) & 15;
     const auto root = roots[chord] + root_.load(std::memory_order_relaxed) - 45;
     const int third = chord == 0 || chord == 1 || chord == 3 || chord == 4 ? 3 : 4;
     const int fifth = chord == 1 ? 6 : 7;
-    const int notes[] = {root + 12, root + 12 + third, root + 12 + fifth};
-    for (std::size_t j = 0; j < 3; ++j) pad_increment_[j] = frequency(notes[j]) / sample_rate;
+    const int seventh = chord == 2 || chord == 5 ? 11 : 10;
+    const int notes[] = {root + 12, root + 12 + third, root + 12 + fifth, root + 12 + seventh};
+    for (std::size_t j = 0; j < 4; ++j) pad_increment_[j] = frequency(notes[j]) / sample_rate;
 
     constexpr bool house_bass[] = {false, false, true, true, false, true, true, false,
                                   false, false, true, true, false, true, true, false};
@@ -194,19 +216,27 @@ class SynthSource final : public Source {
     if (custom_bass_notes_.load(std::memory_order_relaxed)) {
       const auto degree = (bass_notes_.load() >> (4 * (step_ % 16))) & 15;
       bass_on_ = degree != 15;
-      bass_note = root - 12 + (degree == 2 ? 12 : degree == 1 ? fifth : 0);
+      bass_note = root - 12 + (degree == 2 ? 12 : degree == 1 ? fifth : degree == 3 ? third : degree == 4 ? seventh : 0);
     }
     bass_increment_ = frequency(bass_note) / sample_rate;
 
     const int arp[] = {0, 7, 12, third, 19, 12, 7, 12 + third};
     const auto position = (step_ + (step_ / 128) * 3) % 8;
-    lead_increment_ = frequency(root + 24 + arp[position]) / sample_rate;
-    lead_on_ = trance || step_ % 2 == 0;
     if (custom_melody_.load(std::memory_order_relaxed)) {
-      const auto degree = (melody_.load(std::memory_order_relaxed) >> (4 * (step_ % 16))) & 15;
-      lead_on_ = degree != 15;
-      const int triad[] = {0, third, fifth};
-      if (lead_on_) lead_increment_ = frequency(root + 12 + triad[degree % 3] + 12 * int(degree / 3)) / sample_rate;
+      const auto pattern = melody_.load(std::memory_order_relaxed);
+      const auto degree = (pattern >> (4 * (step_ % 16))) & 15;
+      if (degree == 14) {
+        lead_held_ = lead_on_;  // A tie never starts or retunes a note.
+      } else {
+        lead_on_ = degree != 15;
+        lead_held_ = lead_on_ && ((pattern >> (4 * ((step_ + 1) % 16))) & 15) == 14;
+        const int triad[] = {0, third, fifth};
+        if (lead_on_) lead_increment_ = frequency(root + 12 + triad[degree % 3] + 12 * int(degree / 3)) / sample_rate;
+      }
+    } else {
+      lead_increment_ = frequency(root + 24 + arp[position]) / sample_rate;
+      lead_on_ = trance || step_ % 2 == 0;
+      lead_held_ = false;
     }
   }
   double random() {
@@ -222,9 +252,13 @@ class SynthSource final : public Source {
   std::atomic<std::uint64_t> melody_{0}, bassline_{0};
   std::atomic<std::uint64_t> harmony_{0x62506250}, bass_notes_{0};
   std::atomic<int> voice_{1}, rhythm_{0};
+  std::atomic<std::uint64_t> chord_steps_{UINT64_C(1) << 32};
+  std::atomic<bool> keys_{false};
+  std::atomic<unsigned> chord_bars_{4};
   std::array<std::atomic<float>, 6> levels_;
   std::array<float, 6> smooth_levels_{};
-  std::array<double, 3> lead_phase_{}, pad_phase_{}, pad_increment_{};
+  std::array<double, 3> lead_phase_{};
+  std::array<double, 4> pad_phase_{}, pad_increment_{};
   std::array<double, 3> voice_weights_{1, 0, 0};
   std::uint64_t step_ = 0;
   std::uint32_t noise_ = 0x92189281;
@@ -232,7 +266,8 @@ class SynthSource final : public Source {
   double kick_phase_ = 0, bass_phase_ = 0, bass_increment_ = 0, lead_increment_ = 0;
   double bass_env_ = 0, lead_env_ = 0, noise_previous_ = 0;
   double hat_gain_ = 1;
-  bool first_ = true, bass_on_ = false, lead_on_ = false, hat_open_ = false;
+  double chord_age_ = 2, chord_velocity_ = 1, chord_env_ = 1, keys_blend_ = 0;
+  bool first_ = true, bass_on_ = false, lead_on_ = false, lead_held_ = false, hat_open_ = false;
 };
 }  // namespace
 std::unique_ptr<Source> make_synth_source() { return std::make_unique<SynthSource>(); }

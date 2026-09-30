@@ -9,7 +9,7 @@ namespace music {
 // Fixed-size messages: parsing and allocation stay on the controller thread.
 enum class Parameter { volume, tempo, filter, delay, kick, clap, hats, bass, lead,
                        pad, style, drums, mute, melody, bassline, root, harmony,
-                       bassnotes, voice, rhythm, none };
+                       bassnotes, voice, rhythm, chords, chord_voice, chord_bars, none };
 struct Control {
   Parameter parameter = Parameter::none;
   float value = 0;

@@ -25,8 +25,10 @@ playback; uninterrupted real-time AI is still a performance milestone to reach.
 ```sh
 python3 scripts/station.py
 # Open http://127.0.0.1:8799 and click Listen.
+# For the progressive-trance program instead:
+python3 scripts/station.py --program trance
 # Or play directly to the Mac's speakers:
-./build/ai-music --source synth --radio --volume .4 --watch live/current.commands
+./build/ai-music --source synth --radio --program french-house --volume .4 --watch live/current.commands
 ```
 
 The local browser player streams newly synthesized stereo PCM from C++ through
@@ -37,16 +39,21 @@ section and provides a mixer, breakdown/build/drop cues, hold, resume, and next
 chapter. It binds only to `127.0.0.1`. Use `--port NUMBER` if needed. Ctrl-C in
 pane 2 stops the local server and its audio engine. Browser buffering adds
 roughly 180 ms plus device/network scheduling; live controls update the engine.
+After restarting the server, refresh the page and click Listen again.
 
 The automatic director creates successive 64-bar chapters: sixteen bars of a
 theme, sixteen of development, an eight-bar breakdown, eight-bar build, and
-sixteen-bar release. Four composed themes return with variations, four-bar lead
-phrases, distinct eight-chord progressions, changing bass pitches/rhythms, and
-pluck/wide/soft lead timbres. Percussion builds include snare subdivisions;
-drumless breakdowns remove kick-driven sidechain pumping. Everything stays in
-the same minor key at a steady 132 BPM. The director never changes tempo;
-manual tempo commands remain available. The program continues until
-stopped, with bounded memory. This is a procedural arranger written by Codex,
+sixteen-bar release. The browser station defaults to **French house at 124 BPM**:
+three original themes with syncopated bass, accented electric-key seventh chords,
+and sparse hooks with held notes. Bass turnarounds, chord accents, and hooks
+change within each chapter. Harmony moves every two bars in this program.
+
+`--program trance` selects four progressive-trance themes at **132 BPM**, with
+four-bar lead phrases, eight-chord progressions, changing bass pitches/rhythms,
+and pluck/wide/soft lead timbres. The native C++ CLI defaults to this program.
+Drumless breakdowns remove kick-driven sidechain pumping. Neither director
+changes tempo; manual tempo commands remain available. Each program continues
+until stopped, with bounded memory. This is a procedural arranger written by Codex,
 not a continuously running language model or neural waveform generator.
 No separate local AI installation or API key is needed for this workflow.
 
@@ -56,7 +63,7 @@ and existing effect tails continue. `cancel` stops scheduled cues and the
 automatic director, holding the current groove. `quit` stops playback.
 A 24-hour uninterrupted run has not yet been validated. Internet/YouTube
 streaming and per-listener stations are future work; the current priority is
-this listener's local progressive-trance sound. The current program has a
+this listener's local sound. The current programs have a
 finite musical vocabulary and does not yet provide album-quality composition.
 
 ## Play and mix house/trance live
@@ -83,8 +90,9 @@ delay 0.35
 to zero to remove it. `filter` is a low-pass cutoff in Hz; `filter 20000` opens
 it fully. `delay` adds a stereo echo synced to the synth's tempo. These effects
 process the live output and are included if you pass `--record`.
-The trance preset is `examples/live-trance.commands`. Changing styles and tempo
-keeps the musical clock running. Chords move every four bars, and the arp and
+The trance preset is `examples/live-trance.commands`; an original French-house
+score is `examples/live-french-house.commands`. Changing styles and tempo
+keeps the musical clock running. Chords move every four bars by default, and the arp and
 drum fill patterns vary over the phrase. Master/layer levels and filter/echo
 changes are smoothed to avoid abrupt jumps.
 
@@ -105,13 +113,21 @@ at 8 mix bass .65
 bars from that start. `ramp START DURATION COMMAND` fades from the value at its
 start to the given target. Mix, master volume, tempo, cutoff, and delay can ramp;
 cutoff sweeps logarithmically. Melody uses 16 sixteenth-note steps: chord-tone
-degrees 0..7, or `-` for rests. Bassline uses 16 zeros/ones. `root 45` selects
+degrees 0..7, `-` for rests, or `~` to hold the previous note without retriggering
+or changing its pitch. A tie after a rest stays silent. Bassline uses 16 zeros/ones. `root 45` selects
 A minor; MIDI roots 36..60 transpose the progression. Notes remain on the synth
 clock; automation updates on audio chunks of at most 64 samples (1.34 ms), with
-DSP smoothing. Timing is based on beats and follows tempo changes.
+DSP smoothing. Rendering also splits at sequencer boundaries so a new phrase
+is applied before its first note triggers. Timing follows the musical beat.
 
-`harmony` sets eight minor-key chord degrees (0..6), four bars per chord.
-`bassnotes` takes 16 steps: `-` rest, `0` root, `1` fifth, `2` octave. `voice`
+`harmony` sets eight minor-key chord degrees (0..6); `chord-bars 1..8` changes
+the duration of each entry (default four bars).
+`bassnotes` takes 16 steps: `-` rest, `0` root, `1` fifth, `2` octave, `3` third,
+`4` seventh. `chord-voice keys` selects an electric-key sound with a diatonic
+seventh; `chord-voice pad` restores the sustained triad sound. `chords` takes
+16 accent levels: `0` rest, `1` soft, `2` normal, `3` accented. Use
+`chords sustain` for continuous chords. The `pad` mixer channel controls both
+chord voices. `voice`
 selects `pluck`, `wide`, or `soft` with a short crossfade; `rhythm` selects
 `steady`, `drive`, or `build`. These are discrete controls that can use `at`.
 `next` cues a new theme, `cancel` holds the current groove, and `radio on`
@@ -283,8 +299,9 @@ output sanitization and mute smoothing, WAV segmentation and shutdown, and
 changes to a watched file during uninterrupted audio. They also check both live
 dance styles, independent layer muting, delay tails, and low-pass attenuation.
 Score tests cover bar quantization, ramp interpolation and replacement, manual
-overrides, cancellation, pattern validation, automatic programs, and tempo cues
-without resetting the audio clock.
+overrides, cancellation, pattern validation, phrase downbeats, tied-note sustain
+and release, complete French-house/trance arrangements, and tempo cues without
+resetting the audio clock.
 The local-web integration test checks nonzero live PCM, remote mixer changes,
 transactional rejection of bad scores, same-origin controls, and clean shutdown.
 Run logs and experimental

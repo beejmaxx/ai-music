@@ -6,7 +6,7 @@
 
 namespace music {
 enum class Action { style, volume, tempo, temperature, drums, mix, filter, delay,
-                    mute, unmute, melody, bassline, root, harmony, bassnotes, voice, rhythm,
+                    mute, unmute, melody, bassline, root, harmony, bassnotes, voice, rhythm, chords, chord_voice, chord_bars,
                     quantize, cancel, radio, next, status, help, quit };
 struct Command {
   Action action;

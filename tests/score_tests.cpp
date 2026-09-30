@@ -73,7 +73,8 @@ void validation() {
       "melody 0 1", "bassline 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 2", "root 44.5", "cancel\nvolume .5"})
     rejects([&] { score(input); });
   for (const char* input : {"harmony 0 1", "harmony 0 1 2 3 4 5 6 7", "voice noisy", "rhythm fast",
-      "bassnotes - 0 0 0 - 0 1 3 - 0 1 0 - 0 0 0"}) rejects([&] { score(input); });
+      "bassnotes - 0 0 0 - 0 1 5 - 0 1 0 - 0 0 0", "chords 0 1", "chord-bars 0",
+      "chord-bars 1.5", "chord-voice piano"}) rejects([&] { score(input); });
   rejects([] { music::validate_controls(music::parse_commands("at 0 volume .4"), true); });
   std::string oversized;
   for (int i = 0; i < 257; ++i) oversized += "at 0 mix kick .5\n";
@@ -112,11 +113,49 @@ void audio_clock() {
   engine.render(audio.data(), audio.size() / 2);
   check(source->synth_value(music::Parameter::bass) == 0, "Later cue follows changed tempo");
 }
-void arrangement_audio() {
+void phrase_downbeat() {
   auto source = music::make_synth_source();
-  source->tempo(132);
+  source->tempo(124);
+  music::Engine engine(*source);
+  engine.score(score("volume 1\nmix kick 0\nmix clap 0\nmix hats 0\nmix bass 0\nmix pad 0\nmix lead 1\n"
+    "melody - - - - - - - - - - - - - - - -\nat 1 melody 0 - - - - - - - - - - - - - - -"));
+  std::array<float, 1024> audio{};
+  double onset_energy = 0;
+  while (source->beat() < 4.2) {
+    engine.render(audio.data(), audio.size() / 2);
+    if (source->beat() > 4 && source->beat() < 4.2)
+      for (auto value : audio) onset_energy += value * value;
+  }
+  check(onset_energy > 1, "A new phrase must sound its first note on the downbeat");
+}
+void held_note() {
+  auto energy = [](const char* melody, double start, double end) {
+    auto source = music::make_synth_source();
+    source->tempo(120);
+    music::Engine engine(*source);
+    engine.score(score(std::string("volume 1\nmix kick 0\nmix clap 0\nmix hats 0\nmix bass 0\nmix pad 0\nmix lead 1\nmelody ") + melody));
+    std::array<float, 960> audio{};
+    double result = 0;
+    while (double(engine.frames()) / music::sample_rate < end) {
+      engine.render(audio.data(), audio.size() / 2);
+      if (double(engine.frames()) / music::sample_rate > start)
+        for (auto sample : audio) result += sample * sample;
+    }
+    return result;
+  };
+  const auto held = energy("0 ~ ~ ~ - - - - - - - - - - - -", .35, .45);
+  const auto short_note = energy("0 - - - - - - - - - - - - - - -", .35, .45);
+  check(held > 1 && held > short_note * 100, "Ties sustain sound beyond one sixteenth note");
+  check(energy("0 ~ ~ ~ - - - - - - - - - - - -", .8, .9) < 1e-5, "Rest releases the held note");
+  check(energy("- ~ ~ ~ - - - - - - - - - - - -", .35, .45) < 1e-5, "A tie after a rest must not start a note");
+}
+void arrangement_audio(const std::string& program) {
+  auto source = music::make_synth_source();
+  const float bpm = program == "french-house" ? 124.f : 132.f;
+  source->tempo(bpm);
   music::Engine engine(*source);
   music::RadioDirector radio(5);
+  radio.program(program);
   engine.score(radio.next());
   std::array<float, 1024> audio{};
   bool heard_break = false, heard_drop = false;
@@ -133,13 +172,13 @@ void arrangement_audio() {
       heard_break |= source->synth_value(music::Parameter::kick) == 0;
     if (source->beat() > 196 && source->beat() < 200)
       heard_drop |= source->synth_value(music::Parameter::kick) == .9f;
-    check(source->synth_value(music::Parameter::tempo) == 132, "Progression never speeds up the station");
+    check(source->synth_value(music::Parameter::tempo) == bpm, "Progression never speeds up the station");
   }
   check(heard_break && heard_drop && energy > 100, "Arrangement removes and restores the rhythm while producing sound");
   check(engine.underruns() == 0 && engine.invalid_samples() == 0, "No audio gaps across the full 64-bar score");
 }
 }  // namespace
 int main() {
-  try { scheduling(); validation(); audio_clock(); arrangement_audio(); std::cout << "Passed: score timing, ramps, replacement, cancellation, radio variations, full 64-bar audio.\n"; }
+  try { scheduling(); validation(); audio_clock(); phrase_downbeat(); held_note(); arrangement_audio("trance"); arrangement_audio("french-house"); std::cout << "Passed: score timing, downbeats, tied notes, automation, full trance/house arrangements.\n"; }
   catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }

@@ -31,10 +31,10 @@ void Engine::render(float* out, std::size_t count, bool offline) noexcept {
   float peak = 0;
   std::uint64_t invalid = 0;
   const auto chunk = source_.is_synth() ? std::size_t(64) : block_size;
-  for (std::size_t offset = 0; offset < count; offset += chunk) {
+  for (std::size_t offset = 0; offset < count;) {
     if (source_.is_synth()) score_.tick(source_.beat(), *this);
     effects_.begin_block();
-    const auto n = std::min(chunk, count - offset);
+    const auto n = std::min({chunk, count - offset, source_.frames_to_tick()});
     const bool ready = offline ? source_.read_offline(left.data(), right.data(), n)
                                : source_.read(left.data(), right.data(), n);
     if (!ready) underruns_.fetch_add(1, std::memory_order_relaxed);
@@ -55,6 +55,7 @@ void Engine::render(float* out, std::size_t count, bool offline) noexcept {
     }
     if (recorder_) recorder_->push(recording.data(), n);
     if (stream_) stream_->push(recording.data(), n);
+    offset += n;
   }
   peak_.store(peak, std::memory_order_relaxed);
   invalid_samples_.fetch_add(invalid, std::memory_order_relaxed);
