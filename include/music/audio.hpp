@@ -3,6 +3,7 @@
 #include "music/recorder.hpp"
 #include "music/effects.hpp"
 #include "music/source.hpp"
+#include "music/stream.hpp"
 #include <AudioUnit/AudioUnit.h>
 #include <atomic>
 #include <cstdint>
@@ -10,7 +11,8 @@
 namespace music {
 class Engine : private ScoreTarget {
  public:
-  Engine(Source& source, Recorder* recorder = nullptr) : source_(source), recorder_(recorder) {}
+  Engine(Source& source, Recorder* recorder = nullptr, StreamOutput* stream = nullptr)
+    : source_(source), recorder_(recorder), stream_(stream) {}
   void render(float* interleaved, std::size_t count, bool offline = false) noexcept;
   void volume(float value) { volume_.store(value); }
   float volume() const { return volume_.load(); }
@@ -31,6 +33,7 @@ class Engine : private ScoreTarget {
   float read_control(Parameter) const noexcept override;
   Source& source_;
   Recorder* recorder_;
+  StreamOutput* stream_;
   Effects effects_;
   ScorePlayer score_;
   std::atomic<float> volume_{0.25f}, peak_{0};

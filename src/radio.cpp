@@ -4,52 +4,69 @@
 
 namespace music {
 Score RadioDirector::next() {
-  struct Mood { const char* name; bool trance; float bpm, lead, pad, cutoff; };
-  constexpr Mood journey[] = {
-    {"Progressive opening", true, 132, .38f, .35f, 6200},
-    {"Rolling trance", true, 134, .48f, .3f, 8000},
-    {"Wide horizon", true, 136, .54f, .45f, 11000},
-    {"Afterglow", true, 132, .34f, .5f, 5000},
-    {"Deep house", false, 126, .27f, .38f, 3800},
-    {"Night drive", false, 128, .35f, .32f, 6000},
-    {"Lift", true, 130, .4f, .4f, 7500},
-    {"Open sky", true, 134, .5f, .45f, 9500},
+  // Four-bar themes: question, answer, lift, cadence. Develop recognizable ideas.
+  constexpr int themes[4][4][16] = {
+    {{3,-1,2,-1,3,4,5,-1,4,-1,3,-1,2,-1,1,2},
+     {3,-1,2,3,5,-1,4,-1,3,-1,2,-1,0,-1,2,-1},
+     {5,-1,4,-1,3,2,3,-1,4,-1,5,-1,6,-1,5,4},
+     {3,-1,2,-1,1,-1,0,-1,2,-1,3,2,1,-1,0,-1}},
+    {{0,-1,3,2,-1,3,0,-1,2,-1,3,5,-1,3,2,-1},
+     {0,-1,3,2,-1,4,3,-1,2,-1,0,2,-1,3,2,-1},
+     {3,-1,5,4,-1,5,3,-1,4,-1,5,6,-1,5,4,-1},
+     {3,-1,2,0,-1,2,3,-1,2,-1,1,0,-1,-1,2,-1}},
+    {{2,3,-1,2,4,-1,3,-1,2,3,-1,5,4,-1,3,-1},
+     {2,3,-1,4,5,-1,4,-1,3,2,-1,0,2,-1,3,-1},
+     {5,6,-1,5,4,-1,3,-1,4,5,-1,6,7,-1,6,-1},
+     {5,4,-1,3,2,-1,0,-1,2,-1,3,-1,2,-1,0,-1}},
+    {{3,-1,-1,2,-1,-1,4,-1,3,-1,-1,5,-1,-1,2,-1},
+     {3,-1,-1,4,-1,-1,5,-1,4,-1,-1,3,-1,-1,0,-1},
+     {5,-1,-1,4,-1,-1,3,-1,5,-1,-1,6,-1,-1,5,-1},
+     {4,-1,-1,3,-1,-1,2,-1,1,-1,-1,0,-1,-1,2,-1}},
   };
-  const auto& mood = journey[chapter_index_++ % std::size(journey)];
-  chapter_ = mood.name;
-  // Compose a four-step motif, answer it, then lift it an octave. Degrees follow
-  // the live chord progression, so new phrases remain harmonically compatible.
-  const int a = int(random_() % 3), b = int(random_() % 3);
-  int motif[] = {a, 2, b + 3, 2, a + 3, b, 2, 3,
-                 a, 2, b + 3, 4, a + 3, 5, b + 3, 2};
+  constexpr const char* names[] = {"Glass orbit", "Night current", "Open horizon", "Inner light"};
+  constexpr const char* chords[] = {"0 5 2 6 0 3 5 4", "0 3 5 6 0 4 3 6", "0 2 5 6 3 5 0 4", "0 5 3 4 0 2 6 4"};
+  constexpr const char* bass[] = {
+    "- 0 0 0 - 0 1 0 - 0 0 2 - 0 1 0",
+    "- - 0 0 - 1 0 - - - 0 2 - 0 1 -",
+    "- 0 2 0 - 0 1 0 - 0 2 0 - 1 0 1",
+    "- 0 - 0 - 0 1 - - 0 - 2 - 1 0 -",
+  };
+  constexpr unsigned order[] = {0, 1, 2, 0, 3, 1, 2, 3};
+  const auto theme = order[chapter_index_++ % std::size(order)];
+  chapter_ = names[theme];
+  const auto voice = theme == 0 || theme == 3 ? "pluck" : "wide";
+  const float lead = theme == 3 ? .4f : .48f;
+  const float cutoff = theme == 1 ? 6000 : 8500;
   std::ostringstream text;
-  text << "quantize 8\nat 0 style " << (mood.trance ? "trance" : "house")
-       << "\nat 0 drums on\nramp 0 8 tempo " << mood.bpm
-       << "\nramp 0 2 mix kick .85\nramp 0 4 mix clap .3\nramp 0 4 mix hats .25"
-       << "\nramp 0 4 mix bass .58\nramp 0 4 mix lead " << mood.lead
-       << "\nramp 0 4 mix pad " << mood.pad
-       << "\nramp 0 4 filter " << mood.cutoff << "\nramp 0 4 delay .28\nat 0 melody";
-  for (unsigned i = 0; i < 16; ++i) {
-    if (!mood.trance && i % 2) text << " -";
-    else text << ' ' << motif[i];
+  text << "quantize 8\nat 0 style trance\nat 0 drums on\nat 0 rhythm steady\nat 0 voice " << voice
+       << "\nat 0 harmony " << chords[theme]
+       << "\nramp 0 2 mix kick .85\nramp 0 4 mix clap .27\nramp 0 4 mix hats .18"
+       << "\nramp 0 4 mix bass .58\nramp 0 4 mix lead " << lead
+       << "\nramp 0 4 mix pad .34\nramp 0 4 filter " << cutoff << "\nramp 0 4 delay .28"
+       << "\nat 16 rhythm drive\nramp 16 4 mix hats .28\nramp 16 4 mix lead " << lead + .06f
+       << "\nramp 24 8 mix pad .5\nramp 28 4 mix lead .25"
+       << "\nramp 32 1 mix kick 0\nramp 32 2 mix bass 0\nramp 32 2 mix clap 0"
+       << "\nramp 32 2 mix hats 0\nat 32 voice soft\nramp 32 2 mix pad .65"
+       << "\nramp 32 4 filter 2600\nramp 32 4 delay .48\nat 40 rhythm build\nat 40 voice " << voice
+       << "\nramp 40 8 filter 11000\nramp 40 7 mix clap .44\nramp 40 7 mix hats .28"
+       << "\nramp 40 8 mix lead .6\nat 47 mix clap 0\nat 47 mix hats 0"
+       << "\nat 48 rhythm drive\nat 48 voice wide\nat 48 mix kick .9\nat 48 mix bass .65"
+       << "\nat 48 mix clap .34\nat 48 mix hats .3\nat 48 delay .23\nramp 48 4 mix pad .34"
+       << "\nramp 52 4 mix lead " << lead << "\nramp 56 8 filter " << cutoff;
+  for (unsigned bar = 0; bar < 64; ++bar) {
+    const unsigned phrase = bar % 4;
+    const bool breakdown = bar >= 32 && bar < 40;
+    const bool answer = bar >= 16 && bar < 32;
+    text << "\nat " << bar << " melody";
+    for (unsigned step = 0; step < 16; ++step) {
+      auto note = themes[theme][answer ? (phrase + 2) % 4 : phrase][step];
+      if (breakdown && step % 4) note = -1;
+      if (bar >= 48 && note >= 0 && note <= 4 && step % 4 == 0) note += 3;
+      if (note < 0) text << " -"; else text << ' ' << note;
+    }
+    if (bar % 8 == 0) text << "\nat " << bar << " bassnotes " << bass[(theme + bar / 16) % 4];
   }
-  text << "\nat 0 bassline";
-  for (unsigned i = 0; i < 16; ++i)
-    text << ' ' << (mood.trance ? i % 4 != 0 : i % 4 == 2 || (i % 4 == 3 && random_() % 2));
-  // Eight-bar groove, four-bar breakdown, four-bar build, sixteen-bar release.
-  text << "\nramp 8 1 mix kick 0\nramp 8 2 mix bass 0\nramp 8 2 mix clap 0"
-       << "\nramp 8 2 mix hats .08\nramp 8 4 filter 900\nramp 8 2 mix pad .62"
-       << "\nramp 8 4 delay .48\nramp 12 4 filter " << mood.cutoff * 1.25f
-       << "\nramp 12 4 mix hats .38\nramp 12 4 mix lead " << mood.lead + .1f
-       << "\nramp 12 3 mix clap .45\nat 15 mix clap 0\nat 15 mix hats 0"
-       << "\nat 16 mix kick .9\nat 16 mix bass .65\nat 16 mix clap .34\nat 16 mix hats .3"
-       << "\nat 16 delay .22\nramp 16 2 mix pad " << mood.pad
-       << "\nramp 16 4 mix lead " << mood.lead << "\nramp 20 4 filter " << mood.cutoff
-       << "\nat 24 melody";
-  for (unsigned i = 0; i < 16; ++i) {
-    if (!mood.trance && i % 2) text << " -";
-    else text << ' ' << motif[(i + 4) % 16];
-  }
+  if (random_() % 2) text << "\nat 56 voice " << voice;
   const auto commands = parse_commands(text.str());
   validate_controls(commands, false, true, true);
   return compile_score(commands);

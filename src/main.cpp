@@ -23,6 +23,7 @@ void on_signal(int) { interrupted = 1; }
 struct Options {
   std::string source = "demo", style, model_dir = "models", record, watch;
   float duration = 0, volume = 0.25f, stats_every = 10;
+  int stream_fd = -1;
   bool no_audio = false, no_input = false, offline = false, radio = false;
 };
 
@@ -31,7 +32,7 @@ void usage() {
     "Usage: ai-music [options]\n"
     "  --source synth|demo|magenta  live synth, demo (default), or actual AI\n"
     "  --style TEXT            synth: house/trance; demo: ambient/pulse; AI: text\n"
-    "  --radio                 endless house/trance program (requires synth)\n"
+    "  --radio                 progressive trance program at 132 BPM (synth)\n"
     "  --model-dir PATH        downloaded model root (default: models)\n"
     "  --record PATH.wav       stream stereo PCM16 to disk; rotate hourly\n"
     "  --watch PATH            load controls/a new DJ score when you save it\n"
@@ -64,6 +65,11 @@ Options options(int argc, char** argv) {
     else if (name == "--offline") { result.offline = true; result.no_audio = true; }
     else if (name == "--no-input") result.no_input = true;
     else if (name == "--radio") result.radio = true;
+    else if (name == "--stream-fd") {
+      const auto fd = music::number_in_range(next(), 3, 1024);
+      if (int(fd) != fd) throw std::runtime_error("Stream descriptor must be an integer");
+      result.stream_fd = int(fd);
+    }
     else throw std::runtime_error("Unknown option: " + name);
   }
   if (result.source != "demo" && result.source != "synth" && result.source != "magenta") throw std::runtime_error("Source must be synth, demo, or magenta");
@@ -77,7 +83,8 @@ Options options(int argc, char** argv) {
   return result;
 }
 
-void status(music::Source& source, const music::Engine& engine, const music::Recorder* recorder) {
+void status(music::Source& source, const music::Engine& engine, const music::Recorder* recorder,
+            const music::StreamOutput* stream, bool radio, bool custom) {
   const auto m = source.metrics();
   rusage usage{};
   getrusage(RUSAGE_SELF, &usage);
@@ -91,13 +98,18 @@ void status(music::Source& source, const music::Engine& engine, const music::Rec
     << " buffer_ms=" << double(m.buffered_frames) * 1000 / music::sample_rate
     << " prompt_status=" << m.prompt_status
     << " peak_rss_mb=" << double(usage.ru_maxrss) / (1024 * 1024)
-    << " recording_dropped=" << (recorder ? recorder->dropped() : 0);
+    << " recording_dropped=" << (recorder ? recorder->dropped() : 0)
+    << " stream_dropped=" << (stream ? stream->dropped() : 0);
   if (source.is_synth()) {
     const auto score = engine.score_status();
     std::cout << " bar=" << 1 + source.beat() / 4
       << " bpm=" << source.synth_value(music::Parameter::tempo)
       << " score=" << score.revision << " score_start_bar=" << 1 + score.start_beat / 4
-      << " cues_remaining=" << score.remaining;
+      << " score_end_bar=" << 1 + score.end_beat / 4
+      << " cues_remaining=" << score.remaining << " radio=" << radio << " custom=" << custom;
+    for (const auto& [name, parameter] : {std::pair{"kick", music::Parameter::kick}, {"clap", music::Parameter::clap},
+         {"hats", music::Parameter::hats}, {"bass", music::Parameter::bass}, {"lead", music::Parameter::lead}, {"pad", music::Parameter::pad}})
+      std::cout << ' ' << name << '=' << source.synth_value(parameter);
   }
   std::cout << std::endl;
 }
@@ -119,16 +131,20 @@ int run(const Options& opts) {
   }
   std::unique_ptr<music::Recorder> recorder;
   if (!opts.record.empty()) recorder = std::make_unique<music::Recorder>(opts.record);
-  music::Engine engine(*source, recorder.get());
+  std::unique_ptr<music::StreamOutput> stream;
+  if (opts.stream_fd >= 0) stream = std::make_unique<music::StreamOutput>(opts.stream_fd);
+  music::Engine engine(*source, recorder.get(), stream.get());
   engine.volume(opts.volume);
+  if (opts.radio) { source->tempo(132); engine.tempo(132); }
   bool quit = false;
-  bool radio_enabled = opts.radio, radio_waiting = false;
+  bool radio_enabled = opts.radio, radio_waiting = false, custom_score = false;
   std::uint64_t radio_revision = 0;
   music::RadioDirector radio;
   auto next_chapter = [&]() {
     const auto score = radio.next();
     if (!engine.score(score)) throw std::runtime_error("Radio score queue is full");
     radio_waiting = true;
+    custom_score = false;
     std::cout << "[radio] " << radio.chapter() << " — new melody, groove / breakdown / build / drop\n";
   };
   if (radio_enabled) next_chapter();
@@ -139,6 +155,7 @@ int run(const Options& opts) {
       const auto score = music::compile_score(parsed, watched && !parsed.empty());
       if (score.count || score.replace || score.cancel) {
         if (!engine.score(score)) throw std::runtime_error("Score queue is full; try the edit again");
+        if (score.replace) custom_score = true;
         if (score.replace || score.cancel)
           std::cout << "[score] " << (score.cancel ? "Cancel queued" : "New score queued")
             << "; controls=" << score.count << "; quantize=" << score.quantum << " bars\n";
@@ -147,8 +164,11 @@ int run(const Options& opts) {
     }
     for (const auto& cmd : parsed) {
       if (cmd.action == music::Action::quit) quit = true;
-      else if (cmd.action == music::Action::status) status(*source, engine, recorder.get());
+      else if (cmd.action == music::Action::status) status(*source, engine, recorder.get(), stream.get(), radio_enabled, custom_score);
       else if (cmd.action == music::Action::help) std::cout << music::command_help() << std::flush;
+      else if (cmd.action == music::Action::next || (cmd.action == music::Action::radio && cmd.number != 0)) {
+        radio_enabled = true; next_chapter();
+      }
       else if (!source->is_synth()) music::apply_control(cmd, *source, engine);
     }
   };
@@ -212,14 +232,16 @@ int run(const Options& opts) {
     const auto now = Clock::now();
     if (!opts.no_audio && opts.duration > 0 && std::chrono::duration<double>(now - start).count() >= opts.duration) break;
     if (recorder && recorder->failed()) break;
-    if (now >= next_stats) { status(*source, engine, recorder.get()); next_stats = now + std::chrono::duration<float>(opts.stats_every); }
+    if (stream && stream->failed()) break;
+    if (now >= next_stats) { status(*source, engine, recorder.get(), stream.get(), radio_enabled, custom_score); next_stats = now + std::chrono::duration<float>(opts.stats_every); }
     if (now >= next_watch) { reload(); next_watch = now + std::chrono::milliseconds(250); }
     if (radio_enabled) {
       const auto score = engine.score_status();
       if (score.revision != radio_revision) { radio_revision = score.revision; radio_waiting = false; }
       // Prepare the next chapter during the final bar, after all earlier cues.
-      const auto next = std::max(score.start_beat + 128., score.end_beat + 32.);
-      if (!radio_waiting && score.remaining == 0 && source->beat() >= next - 4) next_chapter();
+      const auto next = custom_score ? std::max(score.start_beat + 128., score.end_beat + 32.)
+                                     : score.start_beat + 256.;
+      if (!radio_waiting && (!custom_score || score.remaining == 0) && source->beat() >= next - 4) next_chapter();
     }
     if (!input_open) { std::this_thread::sleep_for(std::chrono::milliseconds(25)); continue; }
     pollfd fd{STDIN_FILENO, POLLIN, 0};
@@ -249,8 +271,9 @@ int run(const Options& opts) {
   if (clock_thread.joinable()) { clock_thread.request_stop(); clock_thread.join(); }
   source->stop();
   if (recorder) recorder->finish();
-  status(*source, engine, recorder.get());
+  status(*source, engine, recorder.get(), stream.get(), radio_enabled, custom_score);
   if (recorder && recorder->failed()) throw std::runtime_error(recorder->error_after_finish());
+  if (stream && stream->failed()) throw std::runtime_error("Live PCM pipe closed");
   if (engine.underruns() || engine.invalid_samples() || (recorder && recorder->dropped())) {
     std::cerr << "Stopped with audio gaps or recording errors; see the counters above.\n";
     return 2;
@@ -264,6 +287,7 @@ int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") { usage(); return 0; }
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+  std::signal(SIGPIPE, SIG_IGN);
   try { return run(options(argc, argv)); }
   catch (const std::exception& e) { std::cerr << "Error: " << e.what() << '\n'; return 1; }
 }

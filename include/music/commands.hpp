@@ -6,7 +6,8 @@
 
 namespace music {
 enum class Action { style, volume, tempo, temperature, drums, mix, filter, delay,
-                    mute, unmute, melody, bassline, root, quantize, cancel, status, help, quit };
+                    mute, unmute, melody, bassline, root, harmony, bassnotes, voice, rhythm,
+                    quantize, cancel, radio, next, status, help, quit };
 struct Command {
   Action action;
   std::string text;

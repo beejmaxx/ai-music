@@ -18,6 +18,7 @@ add_library(music_core
   src/commands.cpp
   src/score.cpp
   src/radio.cpp
+  src/stream.cpp
   src/demo_source.cpp
   src/synth_source.cpp
   src/recorder.cpp)

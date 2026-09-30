@@ -54,6 +54,7 @@ void Engine::render(float* out, std::size_t count, bool offline) noexcept {
       peak = std::max({peak, std::abs(l), std::abs(r)});
     }
     if (recorder_) recorder_->push(recording.data(), n);
+    if (stream_) stream_->push(recording.data(), n);
   }
   peak_.store(peak, std::memory_order_relaxed);
   invalid_samples_.fetch_add(invalid, std::memory_order_relaxed);

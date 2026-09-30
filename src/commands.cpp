@@ -28,6 +28,10 @@ Control control(const Command& command) {
     case Action::root: return {Parameter::root, value};
     case Action::melody: return {Parameter::melody, 0, command.pattern};
     case Action::bassline: return {Parameter::bassline, 0, command.pattern};
+    case Action::bassnotes: return {Parameter::bassnotes, 0, command.pattern};
+    case Action::harmony: return {Parameter::harmony, 0, command.pattern};
+    case Action::voice: return {Parameter::voice, value};
+    case Action::rhythm: return {Parameter::rhythm, value};
     case Action::mix: {
       const char* names[] = {"kick", "clap", "hats", "bass", "lead", "pad"};
       for (unsigned i = 0; i < 6; ++i)
@@ -84,19 +88,28 @@ std::vector<Command> parse_commands(const std::string& text) {
       if (length > 0 && !rampable(command.action)) throw std::runtime_error("Ramp supports mix, volume, tempo, filter, and delay");
       command.bar = bar; command.duration = length;
       commands.push_back(command);
-    } else if (name == "melody" || name == "bassline") {
+    } else if (name == "voice" || name == "rhythm") {
+      const std::array<std::string, 3> choices = name == "voice"
+        ? std::array<std::string, 3>{"pluck", "wide", "soft"}
+        : std::array<std::string, 3>{"steady", "drive", "build"};
+      const auto choice = std::find(choices.begin(), choices.end(), value);
+      if (choice == choices.end()) throw std::runtime_error("Use voice pluck|wide|soft, or rhythm steady|drive|build");
+      commands.push_back({name == "voice" ? Action::voice : Action::rhythm, {}, float(choice - choices.begin())});
+    } else if (name == "melody" || name == "bassline" || name == "bassnotes" || name == "harmony") {
       std::istringstream args(value);
       std::string token;
       std::uint64_t pattern = 0;
-      for (unsigned i = 0; i < 16; ++i) {
-        if (!(args >> token)) throw std::runtime_error("Patterns need exactly 16 steps");
-        const auto degree = name == "melody" && token == "-" ? 15.f
-          : number_in_range(token, 0, name == "melody" ? 7 : 1);
+      const unsigned steps = name == "harmony" ? 8 : 16;
+      for (unsigned i = 0; i < steps; ++i) {
+        if (!(args >> token)) throw std::runtime_error("Expected " + std::to_string(steps) + " pattern steps");
+        const auto degree = (name == "melody" || name == "bassnotes") && token == "-" ? 15.f
+          : number_in_range(token, 0, name == "melody" ? 7 : name == "harmony" ? 6 : name == "bassnotes" ? 2 : 1);
         if (std::floor(degree) != degree) throw std::runtime_error("Pattern steps must be whole numbers (or - for melody rests)");
-        pattern |= std::uint64_t(degree) << (i * (name == "melody" ? 4 : 1));
+        pattern |= std::uint64_t(degree) << (i * (name == "bassline" ? 1 : 4));
       }
-      if (args >> token) throw std::runtime_error("Patterns need exactly 16 steps");
-      commands.push_back({name == "melody" ? Action::melody : Action::bassline, {}, 0, -1, 0, pattern});
+      if (args >> token) throw std::runtime_error("Too many pattern steps");
+      commands.push_back({name == "melody" ? Action::melody : name == "bassline" ? Action::bassline
+        : name == "harmony" ? Action::harmony : Action::bassnotes, {}, 0, -1, 0, pattern});
     } else if (name == "root" || name == "quantize") {
       const auto number = number_in_range(value, name == "root" ? 36 : 1, name == "root" ? 60 : 64);
       if (std::floor(number) != number) throw std::runtime_error("Root and quantize require whole numbers");
@@ -109,9 +122,9 @@ std::vector<Command> parse_commands(const std::string& text) {
       const auto low = kind == Action::volume ? 0.0f : kind == Action::tempo ? 30.0f : 0.1f;
       const auto high = kind == Action::volume ? 1.0f : kind == Action::tempo ? 240.0f : 2.0f;
       commands.push_back({kind, {}, number_in_range(value, low, high)});
-    } else if (name == "drums") {
-      if (value != "on" && value != "off") throw std::runtime_error("Use 'drums on' or 'drums off'");
-      commands.push_back({Action::drums, {}, value == "on" ? 1.0f : 0.0f});
+    } else if (name == "drums" || name == "radio") {
+      if (value != "on" && value != "off") throw std::runtime_error("Use " + name + " on|off");
+      commands.push_back({name == "drums" ? Action::drums : Action::radio, {}, value == "on" ? 1.0f : 0.0f});
     } else if (name == "filter" || name == "delay") {
       commands.push_back({name == "filter" ? Action::filter : Action::delay, {},
         number_in_range(value, name == "filter" ? 20 : 0, name == "filter" ? 20000 : 1)});
@@ -130,6 +143,7 @@ std::vector<Command> parse_commands(const std::string& text) {
       else if (name == "help") commands.push_back({Action::help, {}});
       else if (name == "quit") commands.push_back({Action::quit, {}});
       else if (name == "cancel") commands.push_back({Action::cancel, {}});
+      else if (name == "next") commands.push_back({Action::next, {}});
       else throw std::runtime_error("Unknown command: " + name + ". Type help.");
     }
   }
@@ -139,10 +153,16 @@ std::vector<Command> parse_commands(const std::string& text) {
 void validate_controls(const std::vector<Command>& commands, bool ai, bool watched_file, bool synth) {
   for (const auto& command : commands) {
     if (!synth && (command.bar >= 0 || command.action == Action::melody || command.action == Action::bassline ||
-        command.action == Action::root || command.action == Action::quantize || command.action == Action::cancel))
+        command.action == Action::root || command.action == Action::quantize || command.action == Action::cancel ||
+        command.action == Action::radio || command.action == Action::next))
       throw std::runtime_error("Scores, patterns, root, and cancel require --source synth");
+    if (!synth && (command.action == Action::harmony || command.action == Action::bassnotes ||
+        command.action == Action::voice || command.action == Action::rhythm))
+      throw std::runtime_error("Harmony, bass notes, voices, and rhythm require --source synth");
     if (command.action == Action::cancel && commands.size() != 1)
       throw std::runtime_error("Use cancel on its own");
+    if ((command.action == Action::radio || command.action == Action::next) && commands.size() != 1)
+      throw std::runtime_error("Use radio/next on its own");
     if (watched_file && (command.action == Action::quit || command.action == Action::help || command.action == Action::status))
       throw std::runtime_error("Watched files contain musical controls only; use the terminal for help/status/quit");
     if (ai && command.action == Action::tempo)
@@ -169,7 +189,8 @@ void apply_control(const Command& c, Source& source, Engine& engine) {
     case Action::delay: engine.delay(c.number); break;
     case Action::mute: engine.mute(true); break;
     case Action::unmute: engine.mute(false); break;
-    case Action::melody: case Action::bassline: case Action::root: source.synth_control(control(c)); break;
+    case Action::melody: case Action::bassline: case Action::root: case Action::harmony:
+    case Action::bassnotes: case Action::voice: case Action::rhythm: source.synth_control(control(c)); break;
     default: break;
   }
 }
@@ -179,7 +200,9 @@ Score compile_score(const std::vector<Command>& commands, bool replace) {
   score.replace = replace;
   bool quantize = false, timed = false;
   for (const auto& command : commands) {
-    if (command.action == Action::cancel) { score.cancel = true; continue; }
+    if (command.action == Action::cancel || (command.action == Action::radio && command.number == 0)) {
+      score.cancel = true; continue;
+    }
     if (command.action == Action::quantize) {
       if (quantize) throw std::runtime_error("Use one quantize directive per score");
       quantize = true; score.quantum = unsigned(command.number); continue;
@@ -209,11 +232,17 @@ const char* command_help() {
          "  tempo 30..240     synth/demo BPM\n"
          "  melody STEPS     synth: 16 chord degrees 0..7, or - for rests\n"
          "  bassline STEPS   synth: 16 steps, 0 (rest) or 1 (note)\n"
+         "  bassnotes STEPS  16 steps: - rest, 0 root, 1 fifth, 2 octave\n"
+         "  harmony CHORDS   8 minor-key degrees 0..6, four bars each\n"
+         "  voice pluck|wide|soft  lead timbre (smoothly crossfaded)\n"
+         "  rhythm steady|drive|build  percussion pattern\n"
          "  root 36..60      synth: MIDI root; 45 = A minor (default)\n"
          "  at BAR COMMAND   synth: cue relative to the next bar\n"
          "  ramp BAR BARS COMMAND  fade toward a numeric target\n"
          "  quantize BARS    score starts at a 1..64-bar boundary (default 1)\n"
          "  cancel           clear future cues/ramps; keep playing\n"
+         "  radio on|off     resume/hold the automatic program\n"
+         "  next             cue the next radio chapter\n"
          "  mute / unmute     keep generating while changing audibility\n"
          "  status / help / quit\n";
 }

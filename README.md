@@ -23,13 +23,29 @@ playback; uninterrupted real-time AI is still a performance milestone to reach.
 ## Run your personal station
 
 ```sh
+python3 scripts/station.py
+# Open http://127.0.0.1:8799 and click Listen.
+# Or play directly to the Mac's speakers:
 ./build/ai-music --source synth --radio --volume .4 --watch live/current.commands
 ```
 
-The automatic director creates successive 32-bar chapters: an eight-bar groove,
-four-bar breakdown, four-bar build, and sixteen-bar release. It writes new
-melody and bass patterns, changes instrumentation, and moves through eight
-house/trance moods with gradual tempo changes. The program continues until
+The local browser player streams newly synthesized stereo PCM from C++ through
+a bounded pipe and HTTP queue into an AudioWorklet. It uses Python's standard
+library; there are no additional server packages or audio files to load. Pause
+stops listening while the station keeps composing. The page shows the current
+section and provides a mixer, breakdown/build/drop cues, hold, resume, and next
+chapter. It binds only to `127.0.0.1`. Use `--port NUMBER` if needed. Ctrl-C in
+pane 2 stops the local server and its audio engine. Browser buffering adds
+roughly 180 ms plus device/network scheduling; live controls update the engine.
+
+The automatic director creates successive 64-bar chapters: sixteen bars of a
+theme, sixteen of development, an eight-bar breakdown, eight-bar build, and
+sixteen-bar release. Four composed themes return with variations, four-bar lead
+phrases, distinct eight-chord progressions, changing bass pitches/rhythms, and
+pluck/wide/soft lead timbres. Percussion builds include snare subdivisions;
+drumless breakdowns remove kick-driven sidechain pumping. Everything stays in
+the same minor key at a steady 132 BPM. The director never changes tempo;
+manual tempo commands remain available. The program continues until
 stopped, with bounded memory. This is a procedural arranger written by Codex,
 not a continuously running language model or neural waveform generator.
 No separate local AI installation or API key is needed for this workflow.
@@ -38,8 +54,10 @@ Describe changes to Codex here; it can edit `live/current.commands` atomically.
 The whole score is validated before it replaces future cues. The audio clock
 and existing effect tails continue. `cancel` stops scheduled cues and the
 automatic director, holding the current groove. `quit` stops playback.
-A 24-hour uninterrupted run has not yet been validated. Internet streaming and
-per-listener stations are future work; the current priority is local sound.
+A 24-hour uninterrupted run has not yet been validated. Internet/YouTube
+streaming and per-listener stations are future work; the current priority is
+this listener's local progressive-trance sound. The current program has a
+finite musical vocabulary and does not yet provide album-quality composition.
 
 ## Play and mix house/trance live
 
@@ -91,6 +109,13 @@ degrees 0..7, or `-` for rests. Bassline uses 16 zeros/ones. `root 45` selects
 A minor; MIDI roots 36..60 transpose the progression. Notes remain on the synth
 clock; automation updates on audio chunks of at most 64 samples (1.34 ms), with
 DSP smoothing. Timing is based on beats and follows tempo changes.
+
+`harmony` sets eight minor-key chord degrees (0..6), four bars per chord.
+`bassnotes` takes 16 steps: `-` rest, `0` root, `1` fifth, `2` octave. `voice`
+selects `pluck`, `wide`, or `soft` with a short crossfade; `rhythm` selects
+`steady`, `drive`, or `build`. These are discrete controls that can use `at`.
+`next` cues a new theme, `cancel` holds the current groove, and `radio on`
+resumes the automatic director.
 
 Each new timed score replaces future cues and freezes previous ramps at their
 current value. Plain terminal controls cancel automation for that parameter.
@@ -235,8 +260,8 @@ user-initiated work for macOS scheduling. Patches are applied during configurati
 against the pinned upstream revision. Offline mode uses a separate blocking read
 on its render thread; the audio-device callback always uses nonblocking reads.
 
-Useful next steps are richer harmony and instrument voices, listening-driven
-refinement, a local player interface, and a 24-hour endurance test. A future
+Useful next steps are richer instrument voices, listening-driven refinement,
+longer thematic development, and a 24-hour endurance test. A future
 listener service can control separate engine instances through the same scores.
 
 ## Validation
@@ -245,6 +270,7 @@ listener service can control separate engine instances through the same scores.
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 python3 tests/live_controls.py build/ai-music
+python3 tests/web_station.py
 # Optional: ten-minute AI check with two live style changes and an audio report.
 python3 scripts/check_stream.py
 # Gap-free offline recording and live-control check (not a real-time test).
@@ -259,6 +285,8 @@ dance styles, independent layer muting, delay tails, and low-pass attenuation.
 Score tests cover bar quantization, ramp interpolation and replacement, manual
 overrides, cancellation, pattern validation, automatic programs, and tempo cues
 without resetting the audio clock.
+The local-web integration test checks nonzero live PCM, remote mixer changes,
+transactional rejection of bad scores, same-origin controls, and clean shutdown.
 Run logs and experimental
 recordings belong in the ignored `validation/` and `recordings/` directories.
 
