@@ -7,13 +7,14 @@
 namespace music {
 enum class Action { style, volume, tempo, temperature, drums, mix, filter, delay,
                     mute, unmute, melody, bassline, root, harmony, bassnotes, voice, rhythm, chords, chord_voice, chord_bars,
-                    quantize, cancel, radio, next, status, help, quit };
+                    lead_midi, bass_midi, quantize, cancel, radio, next, status, help, quit };
 struct Command {
   Action action;
   std::string text;
   float number = 0;
   float bar = -1, duration = 0;
   std::uint64_t pattern = 0;
+  std::uint64_t pattern_high = 0;
 };
 float number_in_range(const std::string& text, float minimum, float maximum);
 std::vector<Command> parse_commands(const std::string& text);

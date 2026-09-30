@@ -27,6 +27,8 @@ Control control(const Command& command) {
     case Action::unmute: return {Parameter::mute, 0};
     case Action::root: return {Parameter::root, value};
     case Action::melody: return {Parameter::melody, 0, command.pattern};
+    case Action::lead_midi: return {Parameter::lead_midi, 0, command.pattern, command.pattern_high};
+    case Action::bass_midi: return {Parameter::bass_midi, 0, command.pattern, command.pattern_high};
     case Action::bassline: return {Parameter::bassline, 0, command.pattern};
     case Action::bassnotes: return {Parameter::bassnotes, 0, command.pattern};
     case Action::harmony: return {Parameter::harmony, 0, command.pattern};
@@ -109,12 +111,25 @@ std::vector<Command> parse_commands(const std::string& text) {
         if (args >> token) throw std::runtime_error("Chords need exactly 16 steps");
       }
       commands.push_back({Action::chords, {}, 0, -1, 0, pattern});
+    } else if (name == "lead-midi" || name == "bass-midi") {
+      Command command{name == "lead-midi" ? Action::lead_midi : Action::bass_midi, {}};
+      std::istringstream args(value);
+      std::string token;
+      for (unsigned i = 0; i < 16; ++i) {
+        if (!(args >> token)) throw std::runtime_error("MIDI patterns need 16 notes, - rests, or ~ ties");
+        const auto note = token == "-" ? 255.f : token == "~" ? 254.f : number_in_range(token, 24, 96);
+        if (std::floor(note) != note) throw std::runtime_error("MIDI notes must be whole numbers 24..96");
+        auto& word = i < 8 ? command.pattern : command.pattern_high;
+        word |= std::uint64_t(note) << (8 * (i % 8));
+      }
+      if (args >> token) throw std::runtime_error("MIDI patterns need exactly 16 steps");
+      commands.push_back(command);
     } else if (name == "voice" || name == "rhythm") {
-      const std::array<std::string, 3> choices = name == "voice"
-        ? std::array<std::string, 3>{"pluck", "wide", "soft"}
-        : std::array<std::string, 3>{"steady", "drive", "build"};
+      const std::array<std::string, 4> choices = name == "voice"
+        ? std::array<std::string, 4>{"pluck", "wide", "soft", "grit"}
+        : std::array<std::string, 4>{"steady", "drive", "build", "broken"};
       const auto choice = std::find(choices.begin(), choices.end(), value);
-      if (choice == choices.end()) throw std::runtime_error("Use voice pluck|wide|soft, or rhythm steady|drive|build");
+      if (choice == choices.end()) throw std::runtime_error("Use voice pluck|wide|soft|grit, or rhythm steady|drive|build|broken");
       commands.push_back({name == "voice" ? Action::voice : Action::rhythm, {}, float(choice - choices.begin())});
     } else if (name == "melody" || name == "bassline" || name == "bassnotes" || name == "harmony") {
       std::istringstream args(value);
@@ -179,6 +194,7 @@ void validate_controls(const std::vector<Command>& commands, bool ai, bool watch
         command.action == Action::radio || command.action == Action::next))
       throw std::runtime_error("Scores, patterns, root, and cancel require --source synth");
     if (!synth && (command.action == Action::harmony || command.action == Action::bassnotes ||
+        command.action == Action::lead_midi || command.action == Action::bass_midi ||
         command.action == Action::voice || command.action == Action::rhythm ||
         command.action == Action::chords || command.action == Action::chord_voice || command.action == Action::chord_bars))
       throw std::runtime_error("Harmony, bass notes, voices, and rhythm require --source synth");
@@ -215,6 +231,7 @@ void apply_control(const Command& c, Source& source, Engine& engine) {
     case Action::melody: case Action::bassline: case Action::root: case Action::harmony:
     case Action::bassnotes: case Action::voice: case Action::rhythm: case Action::chords:
     case Action::chord_voice: case Action::chord_bars: source.synth_control(control(c)); break;
+    case Action::lead_midi: case Action::bass_midi: source.synth_control(control(c)); break;
     default: break;
   }
 }
@@ -257,12 +274,14 @@ const char* command_help() {
          "  melody STEPS     16 chord degrees 0..7, - rest, ~ hold previous note\n"
          "  bassline STEPS   synth: 16 steps, 0 (rest) or 1 (note)\n"
          "  bassnotes STEPS  - rest; 0 root, 1 fifth, 2 octave, 3 third, 4 seventh\n"
+         "  lead-midi STEPS  16 absolute MIDI notes 24..96, - rest, ~ tie\n"
+         "  bass-midi STEPS  same notation for independent chromatic bass riffs\n"
          "  chords STEPS     16 steps: 0 rest, 1 soft, 2 normal, 3 accent; or sustain\n"
          "  chord-voice pad|keys  sustained pad or percussive electric keys\n"
          "  chord-bars 1..8  bars per chord in the harmony pattern\n"
          "  harmony CHORDS   8 minor-key degrees 0..6, four bars each\n"
-         "  voice pluck|wide|soft  lead timbre (smoothly crossfaded)\n"
-         "  rhythm steady|drive|build  percussion pattern\n"
+         "  voice pluck|wide|soft|grit  lead timbre (smoothly crossfaded)\n"
+         "  rhythm steady|drive|build|broken  percussion pattern\n"
          "  root 36..60      synth: MIDI root; 45 = A minor (default)\n"
          "  at BAR COMMAND   synth: cue relative to the next bar\n"
          "  ramp BAR BARS COMMAND  fade toward a numeric target\n"

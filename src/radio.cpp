@@ -4,8 +4,34 @@
 
 namespace music {
 void RadioDirector::program(const std::string& name) {
-  if (name != "trance" && name != "french-house") throw std::runtime_error("Program must be trance or french-house");
-  french_house_ = name == "french-house";
+  if (name != "trance" && name != "french-house" && name != "funk-study")
+    throw std::runtime_error("Program must be trance, french-house, or funk-study");
+  program_ = name;
+}
+
+Score RadioDirector::next_funk() {
+  // A short sound-design study, not a verified transcription of Da Funk.
+  chapter_ = "Da Funk: sound study";
+  ++chapter_index_;
+  constexpr const char* riffs[] = {
+    "65 ~ ~ ~ 65 ~ ~ - 63 ~ 65 ~ 68 ~ ~ -",
+    "60 ~ ~ ~ 60 ~ ~ - 58 ~ 60 ~ 63 ~ ~ -",
+    "56 ~ ~ ~ 56 ~ ~ - 55 ~ 56 ~ 60 ~ ~ -",
+    "65 ~ ~ ~ 65 ~ ~ - 67 ~ ~ - 68 ~ ~ -",
+  };
+  std::ostringstream text;
+  text << "quantize 4\nat 0 style house\nat 0 drums on\nat 0 voice grit\nat 0 rhythm steady"
+       << "\nat 0 root 41\nat 0 harmony 0 0 0 0 0 0 0 0\nat 0 chord-bars 4"
+       << "\nat 0 chords sustain\nat 0 chord-voice pad\nat 0 mix pad 0"
+       << "\nramp 0 1 mix kick .9\nramp 0 1 mix clap .42\nramp 0 1 mix hats .18"
+       << "\nramp 0 1 mix bass .7\nramp 0 1 mix lead .32\nramp 0 1 filter 14000\nat 0 delay .035"
+       << "\nat 0 bass-midi 29 ~ - 29 - - 29 ~ 29 ~ - 36 - 41 36 -"
+       << "\nat 8 mix lead 0\nat 10 mix lead .32\nat 12 rhythm drive\nat 14 rhythm steady";
+  for (unsigned bar = 0; bar < 16; ++bar)
+    text << "\nat " << bar << " lead-midi " << riffs[bar % 4];
+  const auto commands = parse_commands(text.str());
+  validate_controls(commands, false, true, true);
+  return compile_score(commands);
 }
 
 Score RadioDirector::next_house() {
@@ -54,7 +80,8 @@ Score RadioDirector::next_house() {
 }
 
 Score RadioDirector::next() {
-  if (french_house_) return next_house();
+  if (program_ == "french-house") return next_house();
+  if (program_ == "funk-study") return next_funk();
   // Four-bar themes: question, answer, lift, cadence. Develop recognizable ideas.
   constexpr int themes[4][4][16] = {
     {{3,-1,2,-1,3,4,5,-1,4,-1,3,-1,2,-1,1,2},

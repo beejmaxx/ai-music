@@ -27,6 +27,8 @@ python3 scripts/station.py
 # Open http://127.0.0.1:8799 and click Listen.
 # For the progressive-trance program instead:
 python3 scripts/station.py --program trance
+# A short, repeating Da Funk sound-design study at 111 BPM:
+python3 scripts/station.py --program funk-study
 # Or play directly to the Mac's speakers:
 ./build/ai-music --source synth --radio --program french-house --volume .4 --watch live/current.commands
 ```
@@ -56,6 +58,16 @@ changes tempo; manual tempo commands remain available. Each program continues
 until stopped, with bounded memory. This is a procedural arranger written by Codex,
 not a continuously running language model or neural waveform generator.
 No separate local AI installation or API key is needed for this workflow.
+
+`--program funk-study` runs a sixteen-bar reference study at a fixed **111 BPM**.
+It uses a four-bar chromatic riff, a distorted pulse voice with a second tone a
+fourth above, and a short lead dropout to expose the drum/bass groove. It is an
+approximation for sound-design comparison, not a verified note-for-note cover.
+The voice design draws on the band-pass, interval, and overdrive approach in
+[Reverb Machine's reconstruction](https://reverbmachine.com/blog/daft-punk-homework-synth-sounds/)
+and [Syntorial's patch study](https://www.syntorial.com/preset-recipe/daft-punk-da-funk-lead/).
+The user's reference MP3s stay in the ignored `recordings/references/` directory;
+they are not loaded or sampled by the live engine.
 
 Describe changes to Codex here; it can edit `live/current.commands` atomically.
 The whole score is validated before it replaces future cues. The audio clock
@@ -131,9 +143,18 @@ the duration of each entry (default four bars).
 seventh; `chord-voice pad` restores the sustained triad sound. `chords` takes
 16 accent levels: `0` rest, `1` soft, `2` normal, `3` accented. Use
 `chords sustain` for continuous chords. The `pad` mixer channel controls both
-chord voices. `voice`
-selects `pluck`, `wide`, or `soft` with a short crossfade; `rhythm` selects
-`steady`, `drive`, or `build`. These are discrete controls that can use `at`.
+chord voices. `voice` selects `pluck`, `wide`, `soft`, or `grit` with a short
+crossfade. `grit` adds a fixed fourth, band-pass filter motion, overdrive, and
+short pitch glides. `rhythm` selects `steady`, `drive`, `build`, or `broken`
+(syncopated kicks). Ducking follows actual kick triggers.
+These are discrete controls that can use `at`.
+
+`lead-midi` and `bass-midi` accept sixteen absolute MIDI notes (24..96), `-`
+rests, and `~` ties. They allow chromatic, independent riffs without following
+the chord progression. For example, `lead-midi 65 ~ ~ ~ 65 ~ ~ - 63 ~ 65 ~ 68 ~ ~ -`.
+The existing `melody`, `bassline`, and `bassnotes` commands restore chord-relative
+patterns. A manual pattern change cancels future patterns for the same instrument,
+including patterns written in the other notation.
 `next` cues a new theme, `cancel` holds the current groove, and `radio on`
 resumes the automatic director.
 
@@ -291,6 +312,7 @@ cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 python3 tests/live_controls.py build/ai-music
 python3 tests/web_station.py
+python3 tests/web_station.py --program funk-study
 # Optional: ten-minute AI check with two live style changes and an audio report.
 python3 scripts/check_stream.py
 # Gap-free offline recording and live-control check (not a real-time test).

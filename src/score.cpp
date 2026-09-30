@@ -20,8 +20,13 @@ void ScorePlayer::advance(double beat, ScoreTarget& target) noexcept {
 void ScorePlayer::cancel_parameter(Parameter parameter) noexcept {
   if (parameter == Parameter::none) return;
   ramps_[static_cast<unsigned>(parameter)].active = false;
+  const auto family = [](Parameter p) {
+    if (p == Parameter::lead_midi) return Parameter::melody;
+    if (p == Parameter::bassnotes || p == Parameter::bass_midi) return Parameter::bassline;
+    return p;
+  };
   for (std::size_t i = next_; i < active_.count; ++i)
-    if (active_.events[i].control.parameter == parameter)
+    if (family(active_.events[i].control.parameter) == family(parameter))
       active_.events[i].control.parameter = Parameter::none;
 }
 

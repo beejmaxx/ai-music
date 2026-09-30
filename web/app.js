@@ -35,9 +35,13 @@ $('mute').onclick = () => command(muted ? 'unmute' : 'mute');
 $('next').onclick = () => command('next');
 $('hold').onclick = () => command('cancel');
 $('resume').onclick = () => command('radio on');
-$('breakdown').onclick = () => command('ramp 0 2 mix kick 0\nramp 0 2 mix bass .1\nramp 0 2 mix clap 0\nramp 0 4 mix hats .06\nramp 0 4 mix pad .6\nramp 0 4 filter 1400\nramp 0 4 delay .45'
-  + (program === 'french-house' ? '' : '\nat 0 melody 0 - 2 - 3 - 2 - 4 - 3 - 2 - 0 -'), true);
-$('build').onclick = () => command(program === 'french-house'
+$('breakdown').onclick = () => command(program === 'funk-study'
+  ? 'ramp 0 2 mix kick 0\nramp 0 2 mix bass .15\nramp 0 2 mix clap 0\nramp 0 2 mix hats .06\nramp 0 2 filter 1400\nramp 0 2 delay .18'
+  : 'ramp 0 2 mix kick 0\nramp 0 2 mix bass .1\nramp 0 2 mix clap 0\nramp 0 4 mix hats .06\nramp 0 4 mix pad .6\nramp 0 4 filter 1400\nramp 0 4 delay .45'
+    + (program === 'french-house' ? '' : '\nat 0 melody 0 - 2 - 3 - 2 - 4 - 3 - 2 - 0 -'), true);
+$('build').onclick = () => command(program === 'funk-study'
+  ? 'at 0 mix kick 0\nat 0 mix bass .2\nramp 0 8 filter 14000\nramp 0 7 mix hats .26\nramp 0 7 mix clap .4\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .9\nat 8 mix bass .7\nat 8 mix lead .32\nat 8 mix clap .42\nat 8 mix hats .18\nat 8 delay .035'
+  : program === 'french-house'
   ? 'at 0 mix kick 0\nat 0 mix bass .2\nramp 0 8 filter 7500\nramp 0 8 mix pad .55\nramp 0 7 mix hats .3\nramp 0 7 mix clap .4\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .9\nat 8 mix bass .7\nat 8 mix clap .32\nat 8 mix hats .25\nat 8 delay .14'
   : 'at 0 mix kick 0\nat 0 mix bass .1\nat 0 melody 0 2 3 2 4 2 3 5 0 2 3 4 5 4 3 2\nat 0 bassline 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1\nramp 0 8 filter 11000\nramp 0 8 mix lead .55\nramp 0 7 mix hats .4\nramp 0 7 mix clap .45\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .9\nat 8 mix bass .65\nat 8 mix clap .32\nat 8 mix hats .3\nat 8 delay .23', true);
 
@@ -97,20 +101,23 @@ async function poll() {
     if (!response.ok) throw Error('Station unavailable');
     const status = await response.json();
     program = status.program || 'trance';
+    const study = program === 'funk-study';
     $('connection').textContent = status.running ? 'Live · local' : 'Station stopped';
     const waiting = status.bar < status.score_start_bar;
     $('chapter').textContent = waiting ? `Up next: ${status.chapter}` : status.chapter;
-    if ($('description')) $('description').textContent = status.program === 'french-house'
+    if ($('description')) $('description').textContent = study
+      ? 'A gritty lead and a heavy groove. A 16-bar sound study, generated live.'
+      : status.program === 'french-house'
       ? 'Funk in the bass. Rhythm in the chords. An original house groove, generated live.'
       : 'Progressive trance. A steady pulse, an evolving journey.';
     $('bpm').textContent = Math.round(status.bpm || 0);
     $('bar').textContent = Math.floor(status.bar || 1);
     const position = Math.max(0, (status.bar || 1) - (status.score_start_bar || 1));
     const phase = position < 16 ? 0 : position < 32 ? 1 : position < 40 ? 2 : position < 48 ? 3 : 4;
-    $('section').textContent = status.custom && status.cues_remaining ? 'Your transition' : !status.radio ? 'Holding the groove' : waiting ? 'Next chapter queued' : status.custom ? 'Your transition' : ['The theme', 'Developing the theme', 'Breakdown', 'Building tension', 'Release'][phase];
-    const length = status.custom ? Math.max(1, status.score_end_bar - status.score_start_bar) : 64;
+    $('section').textContent = status.custom && status.cues_remaining ? 'Your transition' : !status.radio ? 'Holding the groove' : waiting ? 'Next chapter queued' : status.custom ? 'Your transition' : study ? 'Sound study · 16 bars' : ['The theme', 'Developing the theme', 'Breakdown', 'Building tension', 'Release'][phase];
+    const length = status.custom ? Math.max(1, status.score_end_bar - status.score_start_bar) : study ? 16 : 64;
     $('progress').style.width = `${Math.min(100, position / length * 100)}%`;
-    document.querySelector('.sections').style.visibility = status.custom || !status.radio ? 'hidden' : 'visible';
+    document.querySelector('.sections').style.visibility = study || status.custom || !status.radio ? 'hidden' : 'visible';
     document.querySelectorAll('.sections span').forEach((node, index) => node.classList.toggle('active', phase === index));
     $('autopilot').textContent = status.radio ? 'Auto DJ on' : 'Manual';
     muted = !!status.muted;

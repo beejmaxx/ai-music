@@ -33,7 +33,7 @@ void usage() {
     "  --source synth|demo|magenta  live synth, demo (default), or actual AI\n"
     "  --style TEXT            synth: house/trance; demo: ambient/pulse; AI: text\n"
     "  --radio                 automatic synth arrangement\n"
-    "  --program trance|french-house  fixed tempo: 132 / 124 BPM\n"
+    "  --program trance|french-house|funk-study  initial BPM: 132 / 124 / 111\n"
     "  --model-dir PATH        downloaded model root (default: models)\n"
     "  --record PATH.wav       stream stereo PCM16 to disk; rotate hourly\n"
     "  --watch PATH            load controls/a new DJ score when you save it\n"
@@ -80,7 +80,8 @@ Options options(int argc, char** argv) {
     throw std::runtime_error("Use a .wav recording path");
   if (result.style.size() > 2048) throw std::runtime_error("Style is too long (2048 characters maximum)");
   if (result.radio && result.source != "synth") throw std::runtime_error("Use --radio with --source synth");
-  if (result.program != "trance" && result.program != "french-house") throw std::runtime_error("Program must be trance or french-house");
+  if (result.program != "trance" && result.program != "french-house" && result.program != "funk-study")
+    throw std::runtime_error("Program must be trance, french-house, or funk-study");
   if (result.offline && (result.source != "magenta" || result.record.empty() || result.duration <= 0))
     throw std::runtime_error("Use --offline with --source magenta, --record PATH.wav, and a positive --duration");
   return result;
@@ -139,7 +140,7 @@ int run(const Options& opts) {
   music::Engine engine(*source, recorder.get(), stream.get());
   engine.volume(opts.volume);
   if (opts.radio) {
-    const auto bpm = opts.program == "french-house" ? 124.f : 132.f;
+    const auto bpm = opts.program == "french-house" ? 124.f : opts.program == "funk-study" ? 111.f : 132.f;
     source->tempo(bpm); engine.tempo(bpm);
   }
   bool quit = false;
@@ -152,7 +153,8 @@ int run(const Options& opts) {
     if (!engine.score(score)) throw std::runtime_error("Radio score queue is full");
     radio_waiting = true;
     custom_score = false;
-    std::cout << "[radio] " << radio.chapter() << " — new melody, groove / breakdown / build / drop\n";
+    std::cout << "[radio] " << radio.chapter()
+              << (radio.bars() == 16 ? " — 16-bar loop\n" : " — new melody, groove / breakdown / build / drop\n");
   };
   if (radio_enabled) next_chapter();
   auto commands = [&](const std::string& text, bool watched = false) {
@@ -247,7 +249,7 @@ int run(const Options& opts) {
       if (score.revision != radio_revision) { radio_revision = score.revision; radio_waiting = false; }
       // Prepare the next chapter during the final bar, after all earlier cues.
       const auto next = custom_score ? std::max(score.start_beat + 128., score.end_beat + 32.)
-                                     : score.start_beat + 256.;
+                                     : score.start_beat + 4 * radio.bars();
       if (!radio_waiting && (!custom_score || score.remaining == 0) && source->beat() >= next - 4) next_chapter();
     }
     if (!input_open) { std::this_thread::sleep_for(std::chrono::milliseconds(25)); continue; }

@@ -16,7 +16,7 @@ struct Target : music::ScoreTarget {
   std::uint64_t melody = 0;
   void write_control(const music::Control& control) noexcept override {
     values[unsigned(control.parameter)] = control.value;
-    if (control.parameter == music::Parameter::melody) melody = control.pattern;
+    if (control.parameter == music::Parameter::melody || control.parameter == music::Parameter::lead_midi) melody = control.pattern;
   }
   float read_control(music::Parameter parameter) const noexcept override { return values[unsigned(parameter)]; }
 };
@@ -66,6 +66,13 @@ void scheduling() {
   check(std::abs(target.read_control(music::Parameter::volume) - .6f) < 1e-6, "New ramp captures preceding ramp at its own start");
   player.tick(144, target);
   check(target.read_control(music::Parameter::lead) == .7f, "Input cues are sorted by musical time");
+  player.submit(score("at 2 melody 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7"));
+  player.tick(160, target);
+  player.submit(score("lead-midi 61 ~ ~ ~ - - - - - - - - - - - -"));
+  player.tick(161, target);
+  const auto manual = target.melody;
+  player.tick(172, target);
+  check(target.melody == manual, "A manual MIDI riff overrides scheduled chord-tone melodies");
 }
 void validation() {
   for (const char* input : {"at -1 volume .5", "at nan volume .5", "at 0 quit", "at 0 status", "at 0 cancel",
@@ -74,13 +81,19 @@ void validation() {
     rejects([&] { score(input); });
   for (const char* input : {"harmony 0 1", "harmony 0 1 2 3 4 5 6 7", "voice noisy", "rhythm fast",
       "bassnotes - 0 0 0 - 0 1 5 - 0 1 0 - 0 0 0", "chords 0 1", "chord-bars 0",
-      "chord-bars 1.5", "chord-voice piano"}) rejects([&] { score(input); });
+      "chord-bars 1.5", "chord-voice piano", "lead-midi 60 61",
+      "bass-midi 23 - - - - - - - - - - - - - - -",
+      "lead-midi 60.5 - - - - - - - - - - - - - - -"}) rejects([&] { score(input); });
   rejects([] { music::validate_controls(music::parse_commands("at 0 volume .4"), true); });
   std::string oversized;
   for (int i = 0; i < 257; ++i) oversized += "at 0 mix kick .5\n";
   rejects([&] { score(oversized); });
   const auto silent = score("melody - - - - - - - - - - - - - - - -");
   check(silent.events[0].control.pattern == UINT64_MAX, "Every melody rest survives packing");
+  const auto midi = score("lead-midi 60 61 ~ - 65 66 67 68 69 70 71 72 - ~ 95 96");
+  check((midi.events[0].control.pattern & 255) == 60 &&
+        (midi.events[0].control.pattern_high & 255) == 69 &&
+        (midi.events[0].control.pattern_high >> 56) == 96, "MIDI notes preserve both halves of the pattern");
   music::RadioDirector radio(17);
   auto first = radio.next();
   bool varied = false;
@@ -149,6 +162,66 @@ void held_note() {
   check(energy("0 ~ ~ ~ - - - - - - - - - - - -", .8, .9) < 1e-5, "Rest releases the held note");
   check(energy("- ~ ~ ~ - - - - - - - - - - - -", .35, .45) < 1e-5, "A tie after a rest must not start a note");
 }
+void midi_audio() {
+  auto source = music::make_synth_source();
+  source->tempo(120);
+  music::Engine engine(*source);
+  engine.score(score("volume 1\nmix kick 0\nmix clap 0\nmix hats 0\nmix bass 0\nmix pad 0\nmix lead 1\nvoice soft\n"
+    "lead-midi 61 ~ ~ ~ - - - - - - - - - - - -"));
+  std::array<float, 960> audio{};
+  double energy = 0, released = 0;
+  unsigned crossings = 0, frames = 0;
+  float previous = 0;
+  while (engine.frames() < music::sample_rate) {
+    engine.render(audio.data(), audio.size() / 2);
+    const auto time = double(engine.frames()) / music::sample_rate;
+    if (time > .2 && time < .45) {
+      for (std::size_t i = 0; i < audio.size(); i += 2) {
+        crossings += previous <= 0 && audio[i] > 0;
+        previous = audio[i]; energy += audio[i] * audio[i]; ++frames;
+      }
+    }
+    if (time > .8) for (auto value : audio) released += value * value;
+  }
+  const auto hz = double(crossings) * music::sample_rate / frames;
+  check(energy > 1 && std::abs(hz - 277.18) < 8, "Absolute chromatic pitch survives the harmony and sustained tie");
+  check(released < 1e-5, "MIDI rest releases the lead");
+
+  auto bass = music::make_synth_source();
+  bass->tempo(120);
+  music::Engine bass_engine(*bass);
+  bass_engine.score(score("volume 1\nmix kick 0\nmix clap 0\nmix hats 0\nmix lead 0\nmix pad 0\nmix bass 1\n"
+    "bass-midi 37 ~ ~ ~ - - - - - - - - - - - -"));
+  double held = 0;
+  released = 0;
+  while (bass_engine.frames() < music::sample_rate) {
+    bass_engine.render(audio.data(), audio.size() / 2);
+    const auto time = double(bass_engine.frames()) / music::sample_rate;
+    if (time > .3 && time < .45) for (auto value : audio) held += value * value;
+    if (time > .8) for (auto value : audio) released += value * value;
+  }
+  check(held > 1 && released < 1e-5, "Bass MIDI ties sustain and rests release");
+}
+void funk_audio() {
+  auto source = music::make_synth_source();
+  source->tempo(111);
+  music::Engine engine(*source);
+  music::RadioDirector radio;
+  radio.program("funk-study");
+  check(radio.bars() == 16, "Funk study loops after sixteen bars");
+  engine.score(radio.next());
+  std::array<float, 1024> audio{};
+  double energy = 0;
+  while (source->beat() < 64) {
+    engine.render(audio.data(), audio.size() / 2);
+    for (auto value : audio) {
+      check(std::isfinite(value) && std::abs(value) <= 1, "Distorted lead remains finite and bounded");
+      energy += value * value;
+    }
+  }
+  check(energy > 100 && engine.invalid_samples() == 0 && source->synth_value(music::Parameter::tempo) == 111,
+        "Complete funk study renders continuously at a steady tempo");
+}
 void arrangement_audio(const std::string& program) {
   auto source = music::make_synth_source();
   const float bpm = program == "french-house" ? 124.f : 132.f;
@@ -179,6 +252,6 @@ void arrangement_audio(const std::string& program) {
 }
 }  // namespace
 int main() {
-  try { scheduling(); validation(); audio_clock(); phrase_downbeat(); held_note(); arrangement_audio("trance"); arrangement_audio("french-house"); std::cout << "Passed: score timing, downbeats, tied notes, automation, full trance/house arrangements.\n"; }
+  try { scheduling(); validation(); audio_clock(); phrase_downbeat(); held_note(); midi_audio(); funk_audio(); arrangement_audio("trance"); arrangement_audio("french-house"); std::cout << "Passed: score timing, downbeats, tied MIDI notes, funk study, full trance/house arrangements.\n"; }
   catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }

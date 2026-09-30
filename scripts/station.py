@@ -226,7 +226,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--volume", type=float, default=.4)
-    parser.add_argument("--program", choices=["french-house", "trance"], default="french-house")
+    parser.add_argument("--program", choices=["french-house", "trance", "funk-study"], default="french-house")
     parser.add_argument("--binary", type=Path, default=ROOT / "build" / "ai-music")
     parser.add_argument("--watch", type=Path, default=ROOT / "live" / "current.commands")
     args = parser.parse_args()

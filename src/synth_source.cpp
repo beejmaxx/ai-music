@@ -27,6 +27,20 @@ double saw(double phase, double increment) {
   }
   return 2 * phase - 1 - correction;
 }
+struct ResonantFilter {
+  double first = 0, second = 0;
+  double process(double input, double cutoff, double damping, bool bandpass = false) noexcept {
+    const auto g = std::tan(std::numbers::pi * cutoff / sample_rate);
+    const auto v1 = (first + g * (input - second)) / (1 + g * (g + damping));
+    const auto v2 = second + g * v1;
+    first = 2 * v1 - first; second = 2 * v2 - second;
+    return bandpass ? v1 : v2;
+  }
+};
+unsigned midi_step(std::uint64_t low, std::uint64_t high, unsigned position) noexcept {
+  position %= 16;
+  return ((position < 8 ? low : high) >> (8 * (position % 8))) & 255;
+}
 
 class SynthSource final : public Source {
  public:
@@ -61,7 +75,7 @@ class SynthSource final : public Source {
       }
       for (std::size_t j = 0; j < levels.size(); ++j)
         smooth_levels_[j] += (levels[j] - smooth_levels_[j]) * .002f;
-      for (unsigned j = 0; j < 3; ++j)
+      for (unsigned j = 0; j < voice_weights_.size(); ++j)
         voice_weights_[j] += ((voice_type == int(j) ? 1. : 0.) - voice_weights_[j]) * .002;
 
       // Every sound is synthesized here, on the current musical clock.
@@ -83,24 +97,20 @@ class SynthSource final : public Source {
       const auto hat = high_noise * std::exp(-hat_age_ * (hat_open_ ? 26 : 145)) * .24 * hat_gain_;
 
       // Duck the tonal parts on each kick; bass and arp retain continuous phase.
-      const double beat_phase = (step_ % 4 + step_phase_) / 4;
       const auto duck_depth = percussion ? std::clamp(smooth_levels_[0] / .85f, 0.f, 1.f) : 0.f;
-      const auto duck = 1 - .73 * duck_depth * std::exp(-beat_phase * 7);
-      const auto bass_target = bass_on_ && step_phase_ < .58 ? 1. : 0.;
+      const auto duck = 1 - .73 * duck_depth * std::exp(-kick_age_ * step_increment * sample_rate * 1.75);
+      const auto bass_target = bass_on_ && (bass_held_ || step_phase_ < .58) ? 1. : 0.;
       bass_env_ += (bass_target - bass_env_) * (bass_target ? .012 : .0015);
       advance(bass_phase_, bass_increment_);
       const auto bass_input = .55 * std::sin(tau * bass_phase_) - .45 * saw(bass_phase_, bass_increment_);
       // Stable two-pole state-variable filter, opened by each bass note.
       const auto cutoff = 260 + 1900 * std::exp(-bass_age_ * 18);
-      const auto g = std::tan(std::numbers::pi * cutoff / sample_rate);
-      const auto v1 = (bass_filter_1_ + g * (bass_input - bass_filter_2_)) / (1 + g * (g + 1.1));
-      const auto v2 = bass_filter_2_ + g * v1;
-      bass_filter_1_ = 2 * v1 - bass_filter_1_;
-      bass_filter_2_ = 2 * v2 - bass_filter_2_;
+      const auto v2 = bass_filter_.process(bass_input, cutoff, 1.1);
       const auto bass = std::tanh(v2 * 1.65) * bass_env_ * .62;
 
       const auto lead_target = lead_on_ && (lead_held_ || step_phase_ < (trance ? .5 : .35)) ? 1. : 0.;
       lead_env_ += (lead_target - lead_env_) * (lead_target ? .007 : .0011);
+      lead_increment_ += (lead_pitch_ - lead_increment_) * (voice_type == 3 ? .0012 : 1.);
       double lead_l = 0, lead_r = 0;
       constexpr double detunes[] = {.996, 1., 1.004};
       for (std::size_t j = 0; j < 3; ++j) {
@@ -112,6 +122,19 @@ class SynthSource final : public Source {
         lead_l += voice * (j == 0 ? .5 : .25);
         lead_r += voice * (j == 2 ? .5 : .25);
       }
+      // A fixed fourth, band-pass envelope, and overdrive form the gritty voice.
+      const auto fourth_increment = lead_increment_ * std::exp2(5. / 12);
+      advance(grit_fourth_phase_, fourth_increment);
+      const auto pulse = [](double phase, double increment) {
+        const auto shifted = phase < .5 ? phase + .5 : phase - .5;
+        return .5 * (saw(phase, increment) - saw(shifted, increment));
+      };
+      const auto raw_grit = .6 * pulse(lead_phase_[1], lead_increment_)
+                         + .4 * pulse(grit_fourth_phase_, fourth_increment);
+      const auto wah = (1 - std::exp(-lead_age_ / .09)) * std::exp(-lead_age_ / 4);
+      const auto resonant = grit_filter_.process(raw_grit, 650 + 1500 * wah, .65, true);
+      const auto grit = std::tanh(resonant * 2.8) * .8 * voice_weights_[3];
+      lead_l += grit; lead_r += grit;
       lead_l *= lead_env_ * .45; lead_r *= lead_env_ * .45;
 
       double pad_l = 0, pad_r = 0;
@@ -145,6 +168,7 @@ class SynthSource final : public Source {
       hat_age_ = std::min(hat_age_ + 1. / sample_rate, 2.);
       chord_age_ = std::min(chord_age_ + 1. / sample_rate, 2.);
       bass_age_ = std::min(bass_age_ + 1. / sample_rate, 2.);
+      lead_age_ = std::min(lead_age_ + 1. / sample_rate, 2.);
       step_phase_ += step_increment;
     }
     beat_.store((double(step_) + step_phase_) / 4, std::memory_order_relaxed);
@@ -184,11 +208,17 @@ class SynthSource final : public Source {
       case Parameter::drums: drums_.store(control.value != 0); break;
       case Parameter::root: root_.store(int(control.value)); break;
       case Parameter::melody:
-        melody_.store(control.pattern); custom_melody_.store(true); break;
+        melody_.store(control.pattern); custom_melody_.store(true); midi_lead_ = false; break;
+      case Parameter::lead_midi:
+        lead_midi_low_ = control.pattern; lead_midi_high_ = control.pattern_high;
+        custom_melody_.store(true); midi_lead_ = true; break;
+      case Parameter::bass_midi:
+        bass_midi_low_ = control.pattern; bass_midi_high_ = control.pattern_high;
+        midi_bass_ = true; break;
       case Parameter::bassline:
-        bassline_.store(control.pattern); custom_bass_.store(true); custom_bass_notes_.store(false); break;
+        bassline_.store(control.pattern); custom_bass_.store(true); custom_bass_notes_.store(false); midi_bass_ = false; break;
       case Parameter::bassnotes:
-        bass_notes_.store(control.pattern); custom_bass_notes_.store(true); break;
+        bass_notes_.store(control.pattern); custom_bass_notes_.store(true); midi_bass_ = false; break;
       case Parameter::harmony: harmony_.store(control.pattern); break;
       case Parameter::voice: voice_.store(int(control.value)); custom_voice_.store(true); break;
       case Parameter::rhythm: rhythm_.store(int(control.value)); break;
@@ -214,9 +244,12 @@ class SynthSource final : public Source {
   void trigger(bool trance) {
     const auto chord_level = (chord_steps_.load(std::memory_order_relaxed) >> (2 * (step_ % 16))) & 3;
     if (chord_level) { chord_age_ = 0; chord_velocity_ = chord_level == 1 ? .55 : chord_level == 2 ? .8 : 1; }
-    if (step_ % 4 == 0) { kick_age_ = 0; kick_phase_ = 0; }
     const bool fill = step_ % 256 >= 252;
     const auto rhythm = rhythm_.load(std::memory_order_relaxed);
+    const auto kick_step = step_ % 16;
+    const bool kick = rhythm == 3 ? kick_step == 0 || kick_step == 6 || kick_step == 8 || kick_step == 11
+                                  : step_ % 4 == 0;
+    if (kick) { kick_age_ = 0; kick_phase_ = 0; }
     if (step_ % 8 == 4 || (fill && step_ % 2 == 1)) clap_age_ = 0;
     if (rhythm == 2 && step_ % (step_ % 128 < 64 ? 4 : step_ % 128 < 96 ? 2 : 1) == 0) clap_age_ = 0;
     if (step_ % 2 == 0 || fill || rhythm == 1) {
@@ -234,35 +267,54 @@ class SynthSource final : public Source {
 
     constexpr bool house_bass[] = {false, false, true, true, false, true, true, false,
                                   false, false, true, true, false, true, true, false};
-    bass_on_ = trance ? step_ % 4 != 0 : house_bass[step_ % 16];
-    if (custom_bass_.load(std::memory_order_relaxed))
-      bass_on_ = (bassline_.load(std::memory_order_relaxed) >> (step_ % 16)) & 1;
-    int bass_note = root - 12 + (step_ % 32 == 31 ? fifth : 0);
-    if (custom_bass_notes_.load(std::memory_order_relaxed)) {
-      const auto degree = (bass_notes_.load() >> (4 * (step_ % 16))) & 15;
-      bass_on_ = degree != 15;
-      bass_note = root - 12 + (degree == 2 ? 12 : degree == 1 ? fifth : degree == 3 ? third : degree == 4 ? seventh : 0);
+    if (midi_bass_) {
+      const auto note = midi_step(bass_midi_low_, bass_midi_high_, unsigned(step_ % 16));
+      if (note == 254) bass_held_ = bass_on_;
+      else {
+        bass_on_ = note != 255;
+        bass_held_ = bass_on_ && midi_step(bass_midi_low_, bass_midi_high_, unsigned((step_ + 1) % 16)) == 254;
+        if (bass_on_) { bass_increment_ = frequency(int(note)) / sample_rate; bass_age_ = 0; }
+      }
+    } else {
+      bass_held_ = false;
+      bass_on_ = trance ? step_ % 4 != 0 : house_bass[step_ % 16];
+      if (custom_bass_.load(std::memory_order_relaxed))
+        bass_on_ = (bassline_.load(std::memory_order_relaxed) >> (step_ % 16)) & 1;
+      int bass_note = root - 12 + (step_ % 32 == 31 ? fifth : 0);
+      if (custom_bass_notes_.load(std::memory_order_relaxed)) {
+        const auto degree = (bass_notes_.load() >> (4 * (step_ % 16))) & 15;
+        bass_on_ = degree != 15;
+        bass_note = root - 12 + (degree == 2 ? 12 : degree == 1 ? fifth : degree == 3 ? third : degree == 4 ? seventh : 0);
+      }
+      bass_increment_ = frequency(bass_note) / sample_rate;
+      if (bass_on_) bass_age_ = 0;
     }
-    bass_increment_ = frequency(bass_note) / sample_rate;
-    if (bass_on_) bass_age_ = 0;
 
     const int arp[] = {0, 7, 12, third, 19, 12, 7, 12 + third};
     const auto position = (step_ + (step_ / 128) * 3) % 8;
     if (custom_melody_.load(std::memory_order_relaxed)) {
       const auto pattern = melody_.load(std::memory_order_relaxed);
-      const auto degree = (pattern >> (4 * (step_ % 16))) & 15;
-      if (degree == 14) {
+      const auto degree = midi_lead_ ? midi_step(lead_midi_low_, lead_midi_high_, unsigned(step_ % 16))
+                                     : (pattern >> (4 * (step_ % 16))) & 15;
+      if (degree == (midi_lead_ ? 254 : 14)) {
         lead_held_ = lead_on_;  // A tie never starts or retunes a note.
       } else {
-        lead_on_ = degree != 15;
-        lead_held_ = lead_on_ && ((pattern >> (4 * ((step_ + 1) % 16))) & 15) == 14;
+        lead_on_ = degree != (midi_lead_ ? 255 : 15);
+        const auto next = midi_lead_ ? midi_step(lead_midi_low_, lead_midi_high_, unsigned((step_ + 1) % 16))
+                                     : (pattern >> (4 * ((step_ + 1) % 16))) & 15;
+        lead_held_ = lead_on_ && next == (midi_lead_ ? 254 : 14);
         const int triad[] = {0, third, fifth};
-        if (lead_on_) lead_increment_ = frequency(root + 12 + triad[degree % 3] + 12 * int(degree / 3)) / sample_rate;
+        if (lead_on_) {
+          const auto note = midi_lead_ ? int(degree) : root + 12 + triad[degree % 3] + 12 * int(degree / 3);
+          lead_pitch_ = frequency(note) / sample_rate; lead_age_ = 0;
+          if (lead_increment_ == 0) lead_increment_ = lead_pitch_;
+        }
       }
     } else {
-      lead_increment_ = frequency(root + 24 + arp[position]) / sample_rate;
+      lead_pitch_ = frequency(root + 24 + arp[position]) / sample_rate;
       lead_on_ = trance || step_ % 2 == 0;
       lead_held_ = false;
+      if (lead_on_) lead_age_ = 0;
     }
   }
   double random() {
@@ -285,13 +337,16 @@ class SynthSource final : public Source {
   std::array<float, 6> smooth_levels_{};
   std::array<double, 3> lead_phase_{};
   std::array<double, 4> pad_phase_{}, pad_increment_{};
-  std::array<double, 3> voice_weights_{1, 0, 0};
+  std::array<double, 4> voice_weights_{1, 0, 0, 0};
   std::uint64_t step_ = 0;
   std::uint32_t noise_ = 0x92189281;
   double step_phase_ = 0, kick_age_ = 2, clap_age_ = 2, hat_age_ = 2;
   double kick_phase_ = 0, bass_phase_ = 0, bass_increment_ = 0, lead_increment_ = 0;
   double bass_env_ = 0, lead_env_ = 0, noise_previous_ = 0;
-  double bass_age_ = 2, bass_filter_1_ = 0, bass_filter_2_ = 0;
+  double bass_age_ = 2, lead_age_ = 2, lead_pitch_ = 0, grit_fourth_phase_ = 0;
+  ResonantFilter bass_filter_, grit_filter_;
+  bool midi_lead_ = false, midi_bass_ = false, bass_held_ = false;
+  std::uint64_t lead_midi_low_ = 0, lead_midi_high_ = 0, bass_midi_low_ = 0, bass_midi_high_ = 0;
   double hat_gain_ = 1;
   double chord_age_ = 2, chord_velocity_ = 1, chord_env_ = 1, keys_blend_ = 0;
   bool first_ = true, bass_on_ = false, lead_on_ = false, lead_held_ = false, hat_open_ = false;

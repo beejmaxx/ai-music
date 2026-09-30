@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate live PCM, local controls, score rejection, and browser isolation."""
 import importlib.util
+import argparse
 import json
 from pathlib import Path
 import socket
@@ -17,14 +18,14 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def main():
+def main(program="french-house"):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix="ai-music-web-") as directory:
         watch = Path(directory) / "current.commands"
         watch.write_text("# Start with the automatic director\n")
-        station = module.Station(ROOT / "build" / "ai-music", watch)
+        station = module.Station(ROOT / "build" / "ai-music", watch, program=program)
         server = module.serve(station, port)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -53,6 +54,8 @@ def main():
         try:
             assert b"afterhours" in get("/")
             initial = wait(lambda state: state.get("frames", 0) > 0)
+            assert initial["program"] == program
+            assert initial["bpm"] == {"trance": 132, "french-house": 124, "funk-study": 111}[program]
             # This is newly generated PCM from the live engine, not a file endpoint.
             with urllib.request.urlopen(base + "/audio", timeout=4) as stream:
                 raw = stream.read(48000)
@@ -87,4 +90,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--program", choices=["french-house", "trance", "funk-study"], default="french-house")
+    main(parser.parse_args().program)
