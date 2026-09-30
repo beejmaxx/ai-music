@@ -24,6 +24,13 @@ class Source {
   virtual void start() {}
   virtual void stop() {}
   virtual bool read(float* left, float* right, std::size_t frames) noexcept = 0;
+  // Optional dry bus bypasses the host's musical filter/echo (synth drums/bass).
+  // Other sources send their complete output through the normal effects bus.
+  virtual bool read_buses(float* left, float* right, float* dry_left, float* dry_right,
+                          std::size_t frames) noexcept {
+    for (std::size_t i = 0; i < frames; ++i) dry_left[i] = dry_right[i] = 0;
+    return read(left, right, frames);
+  }
   // Offline consumer only: may wait for generation. Never use in an audio callback.
   virtual bool read_offline(float* left, float* right, std::size_t frames) noexcept {
     return read(left, right, frames);

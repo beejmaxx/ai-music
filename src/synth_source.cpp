@@ -36,6 +36,14 @@ class SynthSource final : public Source {
   }
 
   bool read(float* left, float* right, std::size_t count) noexcept override {
+    return render(left, right, nullptr, nullptr, count);
+  }
+  bool read_buses(float* left, float* right, float* dry_left, float* dry_right,
+                  std::size_t count) noexcept override {
+    return render(left, right, dry_left, dry_right, count);
+  }
+  bool render(float* left, float* right, float* dry_left, float* dry_right,
+              std::size_t count) noexcept {
     const auto step_increment = bpm_.load(std::memory_order_relaxed) * 4 / (60.0 * sample_rate);
     const bool trance = trance_.load(std::memory_order_relaxed);
     const bool percussion = drums_.load(std::memory_order_relaxed);
@@ -57,13 +65,15 @@ class SynthSource final : public Source {
         voice_weights_[j] += ((voice_type == int(j) ? 1. : 0.) - voice_weights_[j]) * .002;
 
       // Every sound is synthesized here, on the current musical clock.
-      const auto kick_hz = 48 + 120 * std::exp(-kick_age_ * 65);
-      advance(kick_phase_, kick_hz / sample_rate);
-      const auto kick = std::sin(tau * kick_phase_) * std::exp(-kick_age_ * 13)
-        * (1 - std::exp(-kick_age_ * 2500));
       const auto noise = random();
       const auto high_noise = noise - noise_previous_;
       noise_previous_ = noise;
+      const auto kick_hz = 49 + 150 * std::exp(-kick_age_ * 60);
+      advance(kick_phase_, kick_hz / sample_rate);
+      const auto kick_body = std::tanh(1.5 * std::sin(tau * kick_phase_)) / 1.25;
+      const auto kick = (kick_body * std::exp(-kick_age_ * 18)
+        + high_noise * .055 * std::exp(-kick_age_ * 650))
+        * (1 - std::exp(-kick_age_ * 2500));
       double clap_env = 0;
       for (double offset : {0., .012, .024}) {
         const auto age = clap_age_ - offset;
@@ -79,7 +89,15 @@ class SynthSource final : public Source {
       const auto bass_target = bass_on_ && step_phase_ < .58 ? 1. : 0.;
       bass_env_ += (bass_target - bass_env_) * (bass_target ? .012 : .0015);
       advance(bass_phase_, bass_increment_);
-      const auto bass = (.8 * std::sin(tau * bass_phase_) + .2 * saw(bass_phase_, bass_increment_)) * bass_env_ * .65;
+      const auto bass_input = .55 * std::sin(tau * bass_phase_) - .45 * saw(bass_phase_, bass_increment_);
+      // Stable two-pole state-variable filter, opened by each bass note.
+      const auto cutoff = 260 + 1900 * std::exp(-bass_age_ * 18);
+      const auto g = std::tan(std::numbers::pi * cutoff / sample_rate);
+      const auto v1 = (bass_filter_1_ + g * (bass_input - bass_filter_2_)) / (1 + g * (g + 1.1));
+      const auto v2 = bass_filter_2_ + g * v1;
+      bass_filter_1_ = 2 * v1 - bass_filter_1_;
+      bass_filter_2_ = 2 * v2 - bass_filter_2_;
+      const auto bass = std::tanh(v2 * 1.65) * bass_env_ * .62;
 
       const auto lead_target = lead_on_ && (lead_held_ || step_phase_ < (trance ? .5 : .35)) ? 1. : 0.;
       lead_env_ += (lead_target - lead_env_) * (lead_target ? .007 : .0011);
@@ -112,14 +130,21 @@ class SynthSource final : public Source {
         pad_r += voice * (j == 2 ? .9 : .6);
       }
       const auto drums = percussion ? kick * smooth_levels_[0] + clap * smooth_levels_[1] + hat * smooth_levels_[2] : 0;
-      const auto tonal_l = bass * smooth_levels_[3] + lead_l * smooth_levels_[4] + pad_l * smooth_levels_[5];
-      const auto tonal_r = bass * smooth_levels_[3] + lead_r * smooth_levels_[4] + pad_r * smooth_levels_[5];
-      left[i] = float(std::tanh((drums + tonal_l * duck) * 1.1) * .85);
-      right[i] = float(std::tanh((drums + tonal_r * duck) * 1.1) * .85);
+      const auto dry = drums + bass * smooth_levels_[3] * duck;
+      const auto tonal_l = (lead_l * smooth_levels_[4] + pad_l * smooth_levels_[5]) * duck;
+      const auto tonal_r = (lead_r * smooth_levels_[4] + pad_r * smooth_levels_[5]) * duck;
+      if (dry_left) {
+        dry_left[i] = dry_right[i] = float(dry);
+        left[i] = float(tonal_l); right[i] = float(tonal_r);
+      } else {
+        left[i] = float(std::tanh((dry + tonal_l) * 1.1) * .85);
+        right[i] = float(std::tanh((dry + tonal_r) * 1.1) * .85);
+      }
       kick_age_ = std::min(kick_age_ + 1. / sample_rate, 2.);
       clap_age_ = std::min(clap_age_ + 1. / sample_rate, 2.);
       hat_age_ = std::min(hat_age_ + 1. / sample_rate, 2.);
       chord_age_ = std::min(chord_age_ + 1. / sample_rate, 2.);
+      bass_age_ = std::min(bass_age_ + 1. / sample_rate, 2.);
       step_phase_ += step_increment;
     }
     beat_.store((double(step_) + step_phase_) / 4, std::memory_order_relaxed);
@@ -219,6 +244,7 @@ class SynthSource final : public Source {
       bass_note = root - 12 + (degree == 2 ? 12 : degree == 1 ? fifth : degree == 3 ? third : degree == 4 ? seventh : 0);
     }
     bass_increment_ = frequency(bass_note) / sample_rate;
+    if (bass_on_) bass_age_ = 0;
 
     const int arp[] = {0, 7, 12, third, 19, 12, 7, 12 + third};
     const auto position = (step_ + (step_ / 128) * 3) % 8;
@@ -265,6 +291,7 @@ class SynthSource final : public Source {
   double step_phase_ = 0, kick_age_ = 2, clap_age_ = 2, hat_age_ = 2;
   double kick_phase_ = 0, bass_phase_ = 0, bass_increment_ = 0, lead_increment_ = 0;
   double bass_env_ = 0, lead_env_ = 0, noise_previous_ = 0;
+  double bass_age_ = 2, bass_filter_1_ = 0, bass_filter_2_ = 0;
   double hat_gain_ = 1;
   double chord_age_ = 2, chord_velocity_ = 1, chord_env_ = 1, keys_blend_ = 0;
   bool first_ = true, bass_on_ = false, lead_on_ = false, lead_held_ = false, hat_open_ = false;

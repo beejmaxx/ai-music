@@ -88,8 +88,12 @@ delay 0.35
 
 `mix` controls kick, clap, hats, bass, lead, and pad independently. Set a layer
 to zero to remove it. `filter` is a low-pass cutoff in Hz; `filter 20000` opens
-it fully. `delay` adds a stereo echo synced to the synth's tempo. These effects
-process the live output and are included if you pass `--record`.
+it fully. `delay` adds a stereo echo synced to the synth's tempo. In the live
+synth, these effects process the hook and chords; drums and bass use a separate
+dry bus so their attacks stay clear. The bass has its own resonant filter that
+opens on each note, and the kick has a shorter, saturated body and a small
+attack transient. Effects process the full mix for the demo and neural sources.
+All processing is included if you pass `--record`.
 The trance preset is `examples/live-trance.commands`; an original French-house
 score is `examples/live-french-house.commands`. Changing styles and tempo
 keeps the musical clock running. Chords move every four bars by default, and the arp and
@@ -298,6 +302,8 @@ The tests exercise concurrent queue ordering and wraparound, malformed controls,
 output sanitization and mute smoothing, WAV segmentation and shutdown, and
 changes to a watched file during uninterrupted audio. They also check both live
 dance styles, independent layer muting, delay tails, and low-pass attenuation.
+Routing checks verify that musical filter/echo changes preserve the kick and
+bass while still affecting the hook.
 Score tests cover bar quantization, ramp interpolation and replacement, manual
 overrides, cancellation, pattern validation, phrase downbeats, tied-note sustain
 and release, complete French-house/trance arrangements, and tempo cues without

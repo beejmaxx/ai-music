@@ -27,6 +27,7 @@ float Engine::read_control(Parameter parameter) const noexcept {
 }
 void Engine::render(float* out, std::size_t count, bool offline) noexcept {
   std::array<float, block_size> left{}, right{};
+  std::array<float, block_size> dry_left{}, dry_right{};
   std::array<StereoFrame, block_size> recording{};
   float peak = 0;
   std::uint64_t invalid = 0;
@@ -36,7 +37,7 @@ void Engine::render(float* out, std::size_t count, bool offline) noexcept {
     effects_.begin_block();
     const auto n = std::min({chunk, count - offset, source_.frames_to_tick()});
     const bool ready = offline ? source_.read_offline(left.data(), right.data(), n)
-                               : source_.read(left.data(), right.data(), n);
+                               : source_.read_buses(left.data(), right.data(), dry_left.data(), dry_right.data(), n);
     if (!ready) underruns_.fetch_add(1, std::memory_order_relaxed);
     const float target = muted_.load(std::memory_order_relaxed) ? 0 : volume_.load(std::memory_order_relaxed);
     for (std::size_t i = 0; i < n; ++i) {
@@ -46,8 +47,14 @@ void Engine::render(float* out, std::size_t count, bool offline) noexcept {
         return std::clamp(value, -4.0f, 4.0f);
       };
       const auto wet = effects_.process(clean(left[i]), clean(right[i]));
-      const auto l = std::clamp(wet.left * gain_, -1.0f, 1.0f);
-      const auto r = std::clamp(wet.right * gain_, -1.0f, 1.0f);
+      auto bus_l = wet.left + clean(dry_left[i]);
+      auto bus_r = wet.right + clean(dry_right[i]);
+      if (source_.is_synth() && !offline) {
+        bus_l = std::tanh(bus_l * 1.1f) * .85f;
+        bus_r = std::tanh(bus_r * 1.1f) * .85f;
+      }
+      const auto l = std::clamp(bus_l * gain_, -1.0f, 1.0f);
+      const auto r = std::clamp(bus_r * gain_, -1.0f, 1.0f);
       out[2 * (offset + i)] = l;
       out[2 * (offset + i) + 1] = r;
       recording[i] = {l, r};

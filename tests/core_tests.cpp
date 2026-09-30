@@ -137,6 +137,39 @@ void synth_test() {
   check(std::abs(last) < .001, "Low-pass filter attenuates high frequencies");
 }
 
+void bus_routing_test() {
+  // Musical effects must not wash out the kick/bass, but must affect the hook.
+  for (const auto* layer : {"kick", "bass", "lead"}) {
+    auto dry = music::make_synth_source(), filtered = music::make_synth_source();
+    std::array<float, music::block_size> left{}, right{};
+    for (auto* source : {dry.get(), filtered.get()}) {
+      for (const auto* name : {"kick", "clap", "hats", "bass", "lead", "pad"}) source->mix(name, 0);
+      source->mix(layer, .8f);
+      // Settle faders before constructing either effects processor.
+      for (int i = 0; i < 64; ++i) source->read(left.data(), right.data(), left.size());
+    }
+    music::Engine original(*dry), effect(*filtered);
+    effect.filter(100);
+    effect.delay(1);
+    std::array<float, music::block_size * 2> a{}, b{};
+    double difference = 0, original_energy = 0, filtered_energy = 0;
+    for (int block = 0; block < 200; ++block) {
+      original.render(a.data(), music::block_size);
+      effect.render(b.data(), music::block_size);
+      if (block < 20) continue;
+      for (std::size_t i = 0; i < a.size(); ++i) {
+        difference += std::abs(a[i] - b[i]);
+        original_energy += a[i] * a[i];
+        filtered_energy += b[i] * b[i];
+      }
+    }
+    check(original_energy > 1, "Routing comparison has an audible solo instrument");
+    if (std::string(layer) == "lead")
+      check(filtered_energy < original_energy * .1, "The hook still passes through its musical filter");
+    else check(difference < 1e-5, "Kick and bass bypass the musical filter and echo");
+  }
+}
+
 std::uint32_t u32(const std::vector<unsigned char>& bytes, std::size_t at) {
   return std::uint32_t(bytes[at]) | (std::uint32_t(bytes[at+1]) << 8) |
     (std::uint32_t(bytes[at+2]) << 16) | (std::uint32_t(bytes[at+3]) << 24);
@@ -167,7 +200,7 @@ void recording_test() {
 
 int main() {
   try {
-    ring_test(); command_test(); engine_test(); synth_test(); recording_test();
+    ring_test(); command_test(); engine_test(); synth_test(); bus_routing_test(); recording_test();
     std::cout << "Passed: concurrent queue, controls, audio bounds, live synth/mixer/effects, streaming WAV.\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
