@@ -1,0 +1,24 @@
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -28,6 +28,9 @@
+ #include <thread>
+ 
+ #include <mlx/mlx.h>
++#ifdef __APPLE__
++#include <pthread.h>
++#endif
+ 
+ namespace magentart {
+ namespace core {
+@@ -378,6 +381,11 @@
+ // ─── Inference loop ─────────────────────────────────────────────────────────
+ 
+ void RealtimeRunner::inference_loop() {
++#ifdef __APPLE__
++    // Generation is user-initiated work with a 40 ms audio deadline.
++    // Explicit QoS lets Apple Silicon schedule it on suitable CPU cores.
++    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
++#endif
+     while (running_.load(std::memory_order_relaxed)) {
+         detail::AutoreleasePool pool;
+ 

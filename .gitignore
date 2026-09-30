@@ -1,0 +1,7 @@
+/build*/
+/.deps/
+/models/
+/recordings/
+/validation/
+__pycache__/
+.DS_Store

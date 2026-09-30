@@ -1,0 +1,13 @@
+# A brighter rolling arpeggio. All audio is synthesized live, without audio files.
+style trance
+tempo 136
+volume 0.4
+drums on
+mix kick 0.85
+mix clap 0.3
+mix hats 0.28
+mix bass 0.6
+mix lead 0.5
+mix pad 0.35
+filter 8500
+delay 0.35

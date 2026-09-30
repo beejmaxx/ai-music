@@ -1,0 +1,5 @@
+# Save this file while the demo runs. The music keeps its place.
+style ambient
+volume 0.25
+tempo 90
+drums off

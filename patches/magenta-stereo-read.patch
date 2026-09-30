@@ -1,0 +1,28 @@
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -218,14 +218,22 @@
+     // requests more frames than the ring buffer can hold at once.
+     if (blocking) {
+         std::size_t target = std::min(count, ring_L_.get_virtual_capacity());
+-        while (ring_L_.available() < target &&
++        while (std::min(ring_L_.available(), ring_R_.available()) < target &&
+                running_.load(std::memory_order_relaxed)) {
+             std::this_thread::sleep_for(std::chrono::microseconds(100));
+         }
+     }
+ 
+-    bool okL = ring_L_.read(destL, count);
+-    bool okR = ring_R_.read(destR, count);
++    // The producer publishes L and R separately. Consume only complete
++    // stereo pairs, otherwise one short read permanently offsets the channels.
++    const auto paired = std::min({count, ring_L_.available(), ring_R_.available()});
++    bool okL = ring_L_.read(destL, paired);
++    bool okR = ring_R_.read(destR, paired);
++    if (paired < count) {
++        std::memset(destL + paired, 0, (count - paired) * sizeof(float));
++        std::memset(destR + paired, 0, (count - paired) * sizeof(float));
++        okL = okR = false;
++    }
+ 
+     // A real-time underrun = the inference thread couldn't keep pace, so the
+     // ring buffer zero-padded. Count it as a dropped frame. Skip the blocking

@@ -1,0 +1,13 @@
+# Save while it plays. These controls change newly synthesized audio immediately.
+style house
+tempo 128
+volume 0.4
+drums on
+mix kick 0.85
+mix clap 0.35
+mix hats 0.25
+mix bass 0.55
+mix lead 0.32
+mix pad 0.3
+filter 7000
+delay 0.25

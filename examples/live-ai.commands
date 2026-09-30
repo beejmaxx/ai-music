@@ -1,0 +1,6 @@
+# Save this file while the AI runs to steer the next audio.
+# Prompt changes are encoded asynchronously; the existing stream continues.
+style instrumental ambient electronic, warm synth pads, soft percussion
+volume 0.25
+temperature 1.1
+drums on

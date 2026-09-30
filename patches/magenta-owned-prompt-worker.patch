@@ -1,0 +1,121 @@
+diff --git a/core/src/mlx_engine.cpp b/core/src/mlx_engine.cpp
+index 7e2e0dd..beb966b 100644
+--- a/core/src/mlx_engine.cpp
++++ b/core/src/mlx_engine.cpp
+@@ -200,6 +200,7 @@ struct MLXEngine::Impl {
+   // --- MusicCoCa async token state ---
+   mutable std::mutex musiccoca_mutex_;
+   std::atomic<bool> is_musiccoca_fetching_{false};
++  std::thread musiccoca_thread_;
+   std::atomic<int> text_encoder_status_{
+       0}; // 0=idle 1=fetching 2=success 3=error
+   std::atomic<int> prompt_statuses_[kMaxPrompts]{};
+@@ -1239,6 +1240,8 @@ bool MLXEngine::Impl::prefill_with_token_array(
+ }
+ 
+ void MLXEngine::Impl::unload() {
++  // The prompt encoder uses these interpreters and must finish before teardown.
++  if (musiccoca_thread_.joinable()) musiccoca_thread_.join();
+   if (text_encoder_interpreter_)
+     TfLiteInterpreterDelete(text_encoder_interpreter_);
+   if (text_encoder_options_)
+@@ -1317,7 +1320,6 @@ void MLXEngine::Impl::reset_state() {
+       add_log(err);
+     }
+   }
+-  is_musiccoca_fetching_ = false;
+ 
+   // Check if we have active prompts still loaded
+   bool has_active_prompts = false;
+@@ -1673,58 +1675,45 @@ void MLXEngine::Impl::set_text_prompts(const std::vector<std::string> &texts,
+ }
+ 
+ void MLXEngine::Impl::start_inference_thread_if_needed() {
+-  add_log("[MagentaRT] start_inference_thread_if_needed called.");
+-  if (is_musiccoca_fetching_.exchange(true)) {
+-    add_log("[MagentaRT] Thread already running, returning.");
+-    return;
++  {
++    // Serialize the idle-to-fetch transition with reblend's quantizer use.
++    std::lock_guard<std::mutex> lock(musiccoca_mutex_);
++    if (is_musiccoca_fetching_.exchange(true)) return;
+   }
++  // A previous worker may have finished its queue but still be returning.
++  if (musiccoca_thread_.joinable()) musiccoca_thread_.join();
++  text_encoder_status_ = 1;
++  quantizer_status_ = 0;
+ 
+-  add_log("[MagentaRT] Starting new inference thread.");
+-  text_encoder_status_ = 1; // fetching
+-  quantizer_status_ = 0;    // idle
+-
+-  std::thread([this]() {
+-    struct Guard {
+-      std::atomic<bool> &flag;
+-      Impl *impl;
+-      ~Guard() {
+-        flag.store(false);
+-        if (impl->text_encoder_status_ == 1)
+-          impl->text_encoder_status_ = 3;
+-        if (impl->quantizer_status_ == 1)
+-          impl->quantizer_status_ = 3;
+-      }
+-    } guard{is_musiccoca_fetching_, this};
+-
+-    try {
+-      while (true) {
+-        std::vector<std::string> texts_copy;
+-        std::vector<float> weights_copy;
+-
+-        {
+-          std::lock_guard<std::mutex> lock(musiccoca_mutex_);
+-          if (!has_pending_musiccoca_) {
+-            break;
+-          }
+-          texts_copy = pending_texts_;
+-          weights_copy = pending_weights_;
+-          has_pending_musiccoca_ = false;
++  musiccoca_thread_ = std::thread([this]() {
++    while (true) {
++      std::vector<std::string> texts_copy;
++      std::vector<float> weights_copy;
++      {
++        std::lock_guard<std::mutex> lock(musiccoca_mutex_);
++        if (!has_pending_musiccoca_) {
++          // Publish idle under the same mutex used to enqueue prompts. A
++          // final prompt cannot slip between the empty check and idle flag.
++          is_musiccoca_fetching_.store(false);
++          return;
+         }
+-
++        texts_copy = pending_texts_;
++        weights_copy = pending_weights_;
++        has_pending_musiccoca_ = false;
++      }
++      try {
+         fetch_musiccoca_tokens(texts_copy, weights_copy);
++      } catch (const std::exception &e) {
++        add_log(std::string("[MagentaRT] Prompt encoding failed: ") + e.what());
++        text_encoder_status_ = 3;
++        quantizer_status_ = 3;
++      } catch (...) {
++        add_log("[MagentaRT] Prompt encoding failed with unknown exception");
++        text_encoder_status_ = 3;
++        quantizer_status_ = 3;
+       }
+-    } catch (const std::exception &e) {
+-      add_log(
+-          std::string("[MagentaRT] Inference thread died with exception: ") +
+-          e.what());
+-      text_encoder_status_ = 3;
+-      quantizer_status_ = 3;
+-    } catch (...) {
+-      add_log("[MagentaRT] Inference thread died with unknown exception");
+-      text_encoder_status_ = 3;
+-      quantizer_status_ = 3;
+     }
+-  }).detach();
++  });
+ }
+ 
+ void MLXEngine::Impl::set_audio_embedding(int index, const float *embedding) {

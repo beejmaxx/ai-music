@@ -1,0 +1,32 @@
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -364,10 +364,11 @@
+ }
+ 
+ EngineMetrics RealtimeRunner::get_metrics() const {
+-    auto m = engine_.last_metrics();
+     float total = frame_total_ms_.load(std::memory_order_relaxed);
+-    return {m.transformer_ms,
+-            total > 0 ? total : m.total_ms,
++    // Read only the atomic timing snapshot; MLXEngine::last_metrics is
++    // owned by the inference thread and is not safe to read here.
++    return {total,
++            total,
+             ring_L_.available(),
+             get_buffer_size(),
+             transport_flags_.load(std::memory_order_relaxed),
+--- a/core/include/magentart/ring_buffer.h
++++ b/core/include/magentart/ring_buffer.h
+@@ -53,8 +53,10 @@
+ 
+     /// Samples available to the consumer right now.
+     size_t available() const {
+-        return write_pos_.load(std::memory_order_acquire) -
+-               read_pos_.load(std::memory_order_relaxed);
++        // A third observer (metrics) must read the consumer cursor first:
++        // reading it after the producer cursor can underflow the snapshot.
++        const auto read = read_pos_.load(std::memory_order_acquire);
++        return write_pos_.load(std::memory_order_acquire) - read;
+     }
+ 
+     /// Samples the producer may write right now without blocking.
