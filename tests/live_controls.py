@@ -2,13 +2,17 @@
 """Exercise saved-file controls and malformed edits while real-time audio continues."""
 import argparse
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
 import wave
+from functional_host import require_functional_exit
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
+parser.add_argument("--allow-scheduler-delays", action="store_true",
+                    help="Check functionality on shared runners while reporting software timer misses")
 args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix="ai-music-controls-") as directory:
     root = Path(directory)
@@ -35,13 +39,17 @@ with tempfile.TemporaryDirectory(prefix="ai-music-controls-") as directory:
             control.write_text("volume 0\ntempo nan\n")
             time.sleep(.9)
             control.write_text("style ambient\nvolume .20\ndrums off\n")
-            if process.wait(timeout=10) != 0:
-                raise RuntimeError(log.read_text())
+            process.wait(timeout=10)
         finally:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
     text = log.read_text()
+    statuses = [dict(re.findall(r"([a-z_]+)=(\S+)", line))
+                for line in text.splitlines() if line.startswith("[status]")]
+    if not statuses:
+        raise RuntimeError(text)
+    misses = require_functional_exit(process.returncode, statuses[-1], args.allow_scheduler_delays)
     assert text.count("[watch] Applied") == 3, text
     assert "current settings retained" in text, text
     assert "volume=0.00" not in text, text
@@ -50,4 +58,6 @@ with tempfile.TemporaryDirectory(prefix="ai-music-controls-") as directory:
     with wave.open(str(recording), "rb") as audio:
         assert audio.getnframes() == 5 * 48000
         assert audio.getnchannels() == 2 and audio.getsampwidth() == 2
-    print("Passed: live edits, atomic rejection of malformed controls, uninterrupted 5-second WAV.")
+    print("Passed: live edits, atomic rejection of malformed controls, complete 5-second WAV.")
+    if misses:
+        print(f"Functional check only: {misses} software timer misses retained; playback timing is not certified.")

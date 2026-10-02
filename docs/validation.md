@@ -4,6 +4,9 @@ The procedural synth and neural Magenta source are separate paths. Passing
 the synth tests does not establish neural generation speed or musical quality.
 CI builds the default macOS host and tests the engine and validation tools;
 it does not download model weights or certify live GPU performance.
+Functional integration tests on shared CI runners explicitly tolerate and
+report software-timer misses while still rejecting all source, recording,
+stream, and native errors. Native acceptance tests do not use that allowance.
 
 ## Current neural status — 2026-10-03
 

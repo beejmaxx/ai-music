@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from functional_host import require_functional_exit
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("station", ROOT / "scripts" / "station.py")
@@ -18,7 +19,7 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def main(program="french-house"):
+def main(program="french-house", allow_scheduler_delays=False):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -85,11 +86,16 @@ def main(program="french-house"):
             server.server_close()
             station.close()
             thread.join(timeout=2)
-        assert station.process.returncode == 0
-    print("Passed: continuous live PCM, web controls, atomic score rejection, local-origin protection, clean shutdown.")
+        misses = require_functional_exit(station.process.returncode, station.snapshot(), allow_scheduler_delays)
+        if misses:
+            print(f"Functional check only: {misses} software timer misses retained; playback timing is not certified.")
+    print("Passed: generated PCM, web controls, atomic score rejection, local-origin protection, and shutdown.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--program", choices=["french-house", "trance", "funk-study"], default="french-house")
-    main(parser.parse_args().program)
+    parser.add_argument("--allow-scheduler-delays", action="store_true",
+                        help="Check functionality on shared runners while reporting software timer misses")
+    args = parser.parse_args()
+    main(args.program, args.allow_scheduler_delays)

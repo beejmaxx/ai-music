@@ -16,9 +16,16 @@ ctest --test-dir build --output-on-failure
 python3 tests/stream_check.py
 python3 tests/live_tuning.py
 python3 tests/gpu_check.py
+python3 tests/functional_host_tests.py
 python3 tests/live_controls.py build/ai-music
 python3 tests/web_station.py
 ```
+
+Hosted CI passes `--allow-scheduler-delays` to the two functional integration
+tests because virtual runners do not provide reliable software-timer deadlines.
+That option reports timer misses and accepts exit status 2 only when every
+source, recording, stream, and native error counter is zero. It never permits
+other failures. The application and native playback validator stay strict.
 
 The README covers the optional Magenta/MLX build. Keep the dependency pins and
 patches reproducible. Changes to stereo queues, audio callbacks, or prompt

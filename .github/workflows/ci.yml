@@ -28,7 +28,8 @@ jobs:
           python3 tests/stream_check.py
           python3 tests/live_tuning.py
           python3 tests/gpu_check.py
+          python3 tests/functional_host_tests.py
       - name: Local controls and browser station
         run: |
-          python3 tests/live_controls.py build/ai-music
-          python3 tests/web_station.py
+          python3 tests/live_controls.py build/ai-music --allow-scheduler-delays
+          python3 tests/web_station.py --allow-scheduler-delays
