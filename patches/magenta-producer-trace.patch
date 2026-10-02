@@ -1,0 +1,152 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
+--- a/core/include/magentart/realtime_runner.h
++++ b/core/include/magentart/realtime_runner.h
+@@ -51,10 +51,13 @@
+ #include <cstdint>
+ #include <cstring>
+ #include <functional>
++#include <memory>
+ #include <mutex>
+ #include <string>
+ #include <thread>
+ #include <vector>
++
++namespace music { class InferenceTrace; }
+ 
+ namespace magentart {
+ namespace core {
+@@ -347,6 +350,7 @@
+     void stop_locked();
+     void inference_loop();
+ 
++    std::unique_ptr<music::InferenceTrace> frame_trace_;
+     MLXEngine engine_{};
+     float audio_buf_L_[kFrameSamples]{};
+     float audio_buf_R_[kFrameSamples]{};
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -19,11 +19,14 @@
+ 
+ #include <magentart/realtime_runner.h>
+ #include <magentart/detail/autorelease_pool.h>
++#include <music/inference_trace.hpp>
++#include <music/log.hpp>
+ 
+ #include <algorithm>
+ #include <chrono>
+ #include <cmath>
+ #include <cstdint>
++#include <cstdlib>
+ #include <cstring>
+ #include <thread>
+ 
+@@ -38,6 +41,8 @@
+ namespace mx = mlx::core;
+ 
+ RealtimeRunner::RealtimeRunner() {
++    if (const auto* path = std::getenv("AI_MUSIC_FRAME_TRACE"); path && *path)
++        frame_trace_ = std::make_unique<music::InferenceTrace>(path);
+     // Default: equal blend of the first two prompt slots.
+     for (int i = 0; i < (int)kMaxPrompts; ++i) {
+         blend_weights_[i].store((i < 2) ? 0.5f : 0.0f, std::memory_order_relaxed);
+@@ -160,6 +165,9 @@
+     if (thread_.joinable()) {
+         running_.store(false, std::memory_order_relaxed);
+         thread_.join();
++        // The producer is gone: all filesystem IO stays on the controller.
++        if (frame_trace_ && !frame_trace_->flush())
++            music::log_line("[trace] Could not write " + frame_trace_->path());
+     }
+     if (!engine_.is_loaded()) return;
+     if (!skip_reset) {
+@@ -196,6 +204,9 @@
+     running_.store(false, std::memory_order_relaxed);
+     if (thread_.joinable()) {
+         thread_.join();
++        // The producer is gone: all filesystem IO stays on the controller.
++        if (frame_trace_ && !frame_trace_->flush())
++            music::log_line("[trace] Could not write " + frame_trace_->path());
+     }
+ }
+ 
+@@ -388,6 +399,10 @@
+ // ─── Inference loop ─────────────────────────────────────────────────────────
+ 
+ void RealtimeRunner::inference_loop() {
++    const auto* keepalive_setting = std::getenv("AI_MUSIC_GPU_KEEPALIVE");
++    const bool gpu_keepalive = !keepalive_setting || std::strcmp(keepalive_setting, "0") != 0;
++    auto* trace = frame_trace_.get();
++    if (trace) trace->begin_run();
+ #ifdef __APPLE__
+     // Generation is user-initiated work with a 40 ms audio deadline.
+     // Explicit QoS lets Apple Silicon schedule it on suitable CPU cores.
+@@ -452,27 +467,63 @@
+         }
+ 
+         using clock = std::chrono::steady_clock;
++        music::InferenceTraceRow row;
++        if (trace) {
++            row.left_before = ring_L_.available();
++            row.right_before = ring_R_.available();
++        }
+         auto t0 = clock::now();
+ 
+         bool ok = engine_.generate_frame(audio_buf_L_, audio_buf_R_);
+         auto t1 = clock::now();
++        if (trace) {
++            row.generation_start_ms = trace->elapsed_ms(t0);
++            row.generation_end_ms = trace->elapsed_ms(t1);
++            row.generation_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
++            row.generated = ok;
++            row.keepalive_enabled = gpu_keepalive;
++            row.left_after_generation = ring_L_.available();
++            row.right_after_generation = ring_R_.available();
++            if (ok) {
++                const auto& metrics = engine_.last_metrics();
++                row.prepare_ms = metrics.prepare_ms;
++                row.dispatch_ms = metrics.dispatch_ms;
++                row.evaluate_ms = metrics.evaluate_ms;
++                row.copy_ms = metrics.copy_ms;
++            }
++        }
+         frame_total_ms_.store(
+             std::chrono::duration<float, std::milli>(t1 - t0).count(),
+             std::memory_order_relaxed);
+ 
++        bool published = false;
+         if (ok) {
+             // Wait until there is space in the buffer instead of dropping
+             // the frame. GPU keepalive: tiny GPU ops keep macOS from
+             // downclocking the GPU during idle gaps (causes permanent
+             // ~8 ms latency increase after ~20 sec of running plugin otherwise).
+             while (running_.load(std::memory_order_relaxed) &&
+-                   !write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples)) {
+-                auto dummy = mx::array({0.0f}) + mx::array({0.0f});
+-                mx::eval(dummy);
++                   !(published = write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples))) {
++                if (trace) ++row.wait_iterations;
++                if (gpu_keepalive) {
++                    auto dummy = mx::array({0.0f}) + mx::array({0.0f});
++                    mx::eval(dummy);
++                    if (trace) ++row.keepalive_calls;
++                }
+                 std::this_thread::sleep_for(std::chrono::microseconds(200));
+             }
+         } else {
+             std::this_thread::sleep_for(std::chrono::milliseconds(10));
++        }
++        if (trace) {
++            const auto finished = clock::now();
++            row.publication_finished_ms = trace->elapsed_ms(finished);
++            row.publication_wait_ms = ok ? std::chrono::duration<double, std::milli>(finished - t1).count() : 0;
++            row.published = published;
++            row.left_after_publication = ring_L_.available();
++            row.right_after_publication = ring_R_.available();
++            row.underruns = dropped_frame_count_.load(std::memory_order_relaxed);
++            trace->record(row);
+         }
+     }
+ }

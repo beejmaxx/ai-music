@@ -1,0 +1,39 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
+--- a/core/src/mlx_engine.cpp
++++ b/core/src/mlx_engine.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "midi_note_tracker.h"
+ #include <magentart/mlx_engine.h>
++#include <music/log.hpp>
+ 
+ #include <algorithm>
+ #include <array>
+@@ -2261,11 +2262,11 @@
+     return;
+   }
+ 
+-  std::cout << "[MagentaRT] Combined Prompt (" << texts.size() << ") tokens: ";
++  std::ostringstream token_log;
++  token_log << "[MagentaRT] Combined Prompt (" << texts.size() << ") tokens: ";
+   for (int i = 0; i < static_cast<int>(kMusicCoCaRVQLevels); ++i) {
+-    std::cout << tokens_result[i] << " ";
+-  }
+-  std::cout << std::endl;
++    token_log << tokens_result[i] << " ";
++  }
+ 
+   // --- Commit phase: copy local results into shared state under the lock ---
+   {
+@@ -2280,6 +2281,8 @@
+     musiccoca_tokens_ = tokens_result;
+   }
+   quantizer_status_ = 2; // success
++  // Publish one complete protocol line after the new conditioning is committed.
++  music::log_line(token_log.str());
+   add_log("[MagentaRT] fetch_musiccoca_tokens success.");
+ }
+ 

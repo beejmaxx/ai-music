@@ -31,6 +31,9 @@ struct ResonantFilter {
   double first = 0, second = 0;
   double process(double input, double cutoff, double damping, bool bandpass = false) noexcept {
     const auto g = std::tan(std::numbers::pi * cutoff / sample_rate);
+    return process_coefficient(input, g, damping, bandpass);
+  }
+  double process_coefficient(double input, double g, double damping, bool bandpass = false) noexcept {
     const auto v1 = (first + g * (input - second)) / (1 + g * (g + damping));
     const auto v2 = second + g * v1;
     first = 2 * v1 - first; second = 2 * v2 - second;
@@ -80,33 +83,58 @@ class SynthSource final : public Source {
 
       // Every sound is synthesized here, on the current musical clock.
       const auto noise = random();
-      const auto high_noise = noise - noise_previous_;
-      noise_previous_ = noise;
-      const auto kick_hz = 49 + 150 * std::exp(-kick_age_ * 60);
+      kick_noise_low_ += (noise - kick_noise_low_) * .32;
+      const auto high_noise = noise - kick_noise_low_;
+      const auto kick_hz = 51 + 125 * std::exp(-kick_age_ * 75);
       advance(kick_phase_, kick_hz / sample_rate);
-      const auto kick_body = std::tanh(1.5 * std::sin(tau * kick_phase_)) / 1.25;
-      const auto kick = (kick_body * std::exp(-kick_age_ * 18)
-        + high_noise * .055 * std::exp(-kick_age_ * 650))
+      const auto kick_body = std::tanh(1.7 * std::sin(tau * kick_phase_)) / 1.35;
+      const auto kick = (kick_body * std::exp(-kick_age_ * 23)
+        + high_noise * .09 * std::exp(-kick_age_ * 400))
         * (1 - std::exp(-kick_age_ * 2500));
+
+      // The backbeat combines a pitched snare body and band-limited clap bursts.
+      // It has its own noise stream, instead of sharing the hats' white-noise edge.
       double clap_env = 0;
-      for (double offset : {0., .012, .024}) {
+      for (double offset : {0., .011, .023}) {
         const auto age = clap_age_ - offset;
-        if (age >= 0) clap_env += std::exp(-age * 95);
+        if (age >= 0) clap_env += std::exp(-age * 125);
       }
-      const auto clap = high_noise * clap_env * .23;
-      const auto hat = high_noise * std::exp(-hat_age_ * (hat_open_ ? 26 : 145)) * .24 * hat_gain_;
+      const auto snare_noise = clap_filter_.process(random(), 1900, .85, true);
+      advance(snare_phase_[0], (175 + 45 * std::exp(-clap_age_ * 80)) / sample_rate);
+      advance(snare_phase_[1], 342. / sample_rate);
+      const auto snare_body = (.24 * std::sin(tau * snare_phase_[0])
+        + .10 * std::sin(tau * snare_phase_[1])) * std::exp(-clap_age_ * 35);
+      const auto clap = (snare_body + snare_noise * (.42 * clap_env + .22 * std::exp(-clap_age_ * 24)))
+        * (1 - std::exp(-clap_age_ * 3000)) * clap_gain_;
+
+      // Inharmonic oscillators give cymbals a metallic spectrum; filtered noise
+      // softens it. The open hat is choked by the following closed hit.
+      constexpr double metals[] = {211, 317, 509, 673, 997, 1499};
+      double metal = 0;
+      for (std::size_t j = 0; j < hat_phase_.size(); ++j) {
+        const auto inc = metals[j] / sample_rate;
+        advance(hat_phase_[j], inc);
+        const auto shifted = hat_phase_[j] < .5 ? hat_phase_[j] + .5 : hat_phase_[j] - .5;
+        metal += .5 * (saw(hat_phase_[j], inc) - saw(shifted, inc));
+      }
+      const auto hat_input = metal * .18 + random() * .45;
+      hat_low_ += (hat_input - hat_low_) * .42;
+      const auto hat_tone = hat_filter_.process(hat_input - hat_low_, 7800, .9, true);
+      const auto hat = hat_tone * std::exp(-hat_age_ * (hat_open_ ? 20 : 105))
+        * (1 - std::exp(-hat_age_ * 8000)) * 1.3 * hat_gain_;
 
       // Duck the tonal parts on each kick; bass and arp retain continuous phase.
       const auto duck_depth = percussion ? std::clamp(smooth_levels_[0] / .85f, 0.f, 1.f) : 0.f;
-      const auto duck = 1 - .73 * duck_depth * std::exp(-kick_age_ * step_increment * sample_rate * 1.75);
+      const auto kick_duck = duck_depth * std::exp(-kick_age_ * step_increment * sample_rate * 1.75);
+      const auto duck = 1 - .73 * kick_duck;
       const auto bass_target = bass_on_ && (bass_held_ || step_phase_ < .58) ? 1. : 0.;
       bass_env_ += (bass_target - bass_env_) * (bass_target ? .012 : .0015);
       advance(bass_phase_, bass_increment_);
-      const auto bass_input = .55 * std::sin(tau * bass_phase_) - .45 * saw(bass_phase_, bass_increment_);
+      const auto bass_input = .28 * std::sin(tau * bass_phase_) - .72 * saw(bass_phase_, bass_increment_);
       // Stable two-pole state-variable filter, opened by each bass note.
-      const auto cutoff = 260 + 1900 * std::exp(-bass_age_ * 18);
-      const auto v2 = bass_filter_.process(bass_input, cutoff, 1.1);
-      const auto bass = std::tanh(v2 * 1.65) * bass_env_ * .62;
+      const auto cutoff = 340 + 1350 * std::exp(-bass_age_ * 20);
+      const auto v2 = bass_filter_.process(bass_input, cutoff, 1.05);
+      const auto bass = std::tanh(v2 * 1.4) * bass_env_ * .55;
 
       const auto lead_target = lead_on_ && (lead_held_ || step_phase_ < (trance ? .5 : .35)) ? 1. : 0.;
       lead_env_ += (lead_target - lead_env_) * (lead_target ? .007 : .0011);
@@ -122,18 +150,30 @@ class SynthSource final : public Source {
         lead_l += voice * (j == 0 ? .5 : .25);
         lead_r += voice * (j == 2 ? .5 : .25);
       }
-      // A fixed fourth, band-pass envelope, and overdrive form the gritty voice.
-      const auto fourth_increment = lead_increment_ * std::exp2(5. / 12);
-      advance(grit_fourth_phase_, fourth_increment);
-      const auto pulse = [](double phase, double increment) {
-        const auto shifted = phase < .5 ? phase + .5 : phase - .5;
-        return .5 * (saw(phase, increment) - saw(shifted, increment));
-      };
-      const auto raw_grit = .6 * pulse(lead_phase_[1], lead_increment_)
-                         + .4 * pulse(grit_fourth_phase_, fourth_increment);
-      const auto wah = (1 - std::exp(-lead_age_ / .09)) * std::exp(-lead_age_ / 4);
-      const auto resonant = grit_filter_.process(raw_grit, 650 + 1500 * wah, .65, true);
-      const auto grit = std::tanh(resonant * 2.8) * .8 * voice_weights_[3];
+      // Run the pulse/filter/drive chain at 2x rate, then low-pass before
+      // decimation. The post-drive filters remove sub/intermodulation buildup
+      // and the brittle top that the old full-band waveshaper left behind.
+      double grit = 0;
+      if (voice_weights_[3] > .00001) {
+        const auto wah = (1 - std::exp(-lead_age_ / .028)) * std::exp(-lead_age_ / .75);
+        const auto g = std::tan(std::numbers::pi * (520 + 1750 * wah) / (sample_rate * 2));
+        constexpr double post_g = .138321;  // tan(pi * 4200 / 96000).
+        for (unsigned sub = 0; sub < 2; ++sub) {
+          const auto inc = lead_increment_ * .5;
+          const auto fourth_inc = inc * std::exp2(5. / 12);
+          advance(grit_phase_, inc); advance(grit_fourth_phase_, fourth_inc);
+          const auto pulse = [](double phase, double increment) {
+            const auto shifted = phase < .48 ? phase + .52 : phase - .48;
+            return .5 * (saw(phase, increment) - saw(shifted, increment));
+          };
+          const auto raw = .55 * pulse(grit_phase_, inc) + .45 * pulse(grit_fourth_phase_, fourth_inc);
+          const auto resonant = grit_filter_.process_coefficient(raw, g, .8, true);
+          const auto driven = std::tanh(resonant * 4.2);
+          grit_low_ += (driven - grit_low_) * .01171;  // 180 Hz high-pass at 96 kHz.
+          grit += grit_post_.process_coefficient(driven - grit_low_, post_g, 1.4) * .5;
+        }
+        grit *= 1.35 * voice_weights_[3];
+      }
       lead_l += grit; lead_r += grit;
       lead_l *= lead_env_ * .45; lead_r *= lead_env_ * .45;
 
@@ -154,8 +194,11 @@ class SynthSource final : public Source {
       }
       const auto drums = percussion ? kick * smooth_levels_[0] + clap * smooth_levels_[1] + hat * smooth_levels_[2] : 0;
       const auto dry = drums + bass * smooth_levels_[3] * duck;
-      const auto tonal_l = (lead_l * smooth_levels_[4] + pad_l * smooth_levels_[5]) * duck;
-      const auto tonal_r = (lead_r * smooth_levels_[4] + pad_r * smooth_levels_[5]) * duck;
+      // A sustained funk hook needs to remain audible over the kick. Preserve
+      // the deeper pumping for the other voices and the bass/chord parts.
+      const auto lead_duck = 1 - (.73 - .59 * voice_weights_[3]) * kick_duck;
+      const auto tonal_l = lead_l * smooth_levels_[4] * lead_duck + pad_l * smooth_levels_[5] * duck;
+      const auto tonal_r = lead_r * smooth_levels_[4] * lead_duck + pad_r * smooth_levels_[5] * duck;
       if (dry_left) {
         dry_left[i] = dry_right[i] = float(dry);
         left[i] = float(tonal_l); right[i] = float(tonal_r);
@@ -250,10 +293,14 @@ class SynthSource final : public Source {
     const bool kick = rhythm == 3 ? kick_step == 0 || kick_step == 6 || kick_step == 8 || kick_step == 11
                                   : step_ % 4 == 0;
     if (kick) { kick_age_ = 0; kick_phase_ = 0; }
-    if (step_ % 8 == 4 || (fill && step_ % 2 == 1)) clap_age_ = 0;
-    if (rhythm == 2 && step_ % (step_ % 128 < 64 ? 4 : step_ % 128 < 96 ? 2 : 1) == 0) clap_age_ = 0;
+    if (step_ % 8 == 4 || (fill && step_ % 2 == 1) ||
+        (rhythm == 2 && step_ % (step_ % 128 < 64 ? 4 : step_ % 128 < 96 ? 2 : 1) == 0)) {
+      clap_age_ = 0; snare_phase_.fill(0);
+      clap_gain_ = step_ % 8 == 4 ? 1 : .58;
+    }
     if (step_ % 2 == 0 || fill || rhythm == 1) {
-      hat_age_ = 0; hat_open_ = step_ % 4 == 2; hat_gain_ = step_ % 2 ? .4 : 1;
+      hat_age_ = 0; hat_open_ = step_ % 4 == 2;
+      hat_gain_ = step_ % 2 ? .36 : hat_open_ ? (step_ % 8 == 2 ? 1 : .88) : .58;
     }
 
     constexpr int roots[] = {45, 47, 48, 50, 52, 41, 43};
@@ -336,18 +383,20 @@ class SynthSource final : public Source {
   std::array<std::atomic<float>, 6> levels_;
   std::array<float, 6> smooth_levels_{};
   std::array<double, 3> lead_phase_{};
+  std::array<double, 2> snare_phase_{};
+  std::array<double, 6> hat_phase_{};
   std::array<double, 4> pad_phase_{}, pad_increment_{};
   std::array<double, 4> voice_weights_{1, 0, 0, 0};
   std::uint64_t step_ = 0;
   std::uint32_t noise_ = 0x92189281;
   double step_phase_ = 0, kick_age_ = 2, clap_age_ = 2, hat_age_ = 2;
   double kick_phase_ = 0, bass_phase_ = 0, bass_increment_ = 0, lead_increment_ = 0;
-  double bass_env_ = 0, lead_env_ = 0, noise_previous_ = 0;
-  double bass_age_ = 2, lead_age_ = 2, lead_pitch_ = 0, grit_fourth_phase_ = 0;
-  ResonantFilter bass_filter_, grit_filter_;
+  double bass_env_ = 0, lead_env_ = 0, kick_noise_low_ = 0, hat_low_ = 0;
+  double bass_age_ = 2, lead_age_ = 2, lead_pitch_ = 0, grit_phase_ = 0, grit_fourth_phase_ = 0, grit_low_ = 0;
+  ResonantFilter bass_filter_, grit_filter_, grit_post_, clap_filter_, hat_filter_;
   bool midi_lead_ = false, midi_bass_ = false, bass_held_ = false;
   std::uint64_t lead_midi_low_ = 0, lead_midi_high_ = 0, bass_midi_low_ = 0, bass_midi_high_ = 0;
-  double hat_gain_ = 1;
+  double hat_gain_ = 1, clap_gain_ = 1;
   double chord_age_ = 2, chord_velocity_ = 1, chord_env_ = 1, keys_blend_ = 0;
   bool first_ = true, bass_on_ = false, lead_on_ = false, lead_held_ = false, hat_open_ = false;
 };

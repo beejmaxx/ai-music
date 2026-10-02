@@ -1,0 +1,93 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
+--- a/core/src/mlx_engine.cpp
++++ b/core/src/mlx_engine.cpp
+@@ -43,6 +43,8 @@
+ #include <vector>
+ 
+ #include <mlx/mlx.h>
++#include <music/mlx_constants.hpp>
++#include <cstdlib>
+ 
+ 
+ #include "sentencepiece_processor.h"
+@@ -483,7 +485,13 @@
+     }
+ 
+     compiled_fn_ = mx::compile([this](const std::vector<mx::array> &inputs) {
+-      return (*transformer_fn_)(inputs);
++      auto outputs = (*transformer_fn_)(inputs);
++      const auto* cache = std::getenv("AI_MUSIC_CACHE_CONSTANTS");
++      if (!cache || std::string(cache) != "0") {
++        const auto count = music::materialize_constants(inputs, outputs);
++        if (count) std::cout << "[MLXEngine] Cached " << count << " constant graph outputs.\n" << std::flush;
++      }
++      return outputs;
+     });
+ 
+     std::string state_path = path;
+@@ -1564,8 +1572,11 @@
+   }
+ 
+   mx::eval(persistent_args_);
++  const auto prepared = clock::now();
+   auto outputs = compiled_fn_(persistent_args_);
++  const auto dispatched = clock::now();
+   mx::eval(outputs);
++  const auto evaluated = clock::now();
+ 
+   // Output 0 is audio: [1, 2, 1920]
+   auto audio = outputs[0];
+@@ -1637,6 +1648,10 @@
+   last_metrics_.transformer_ms =
+       std::chrono::duration<float, std::milli>(t1 - t0).count();
+   last_metrics_.total_ms = last_metrics_.transformer_ms;
++  last_metrics_.prepare_ms = std::chrono::duration<float, std::milli>(prepared - t0).count();
++  last_metrics_.dispatch_ms = std::chrono::duration<float, std::milli>(dispatched - prepared).count();
++  last_metrics_.evaluate_ms = std::chrono::duration<float, std::milli>(evaluated - dispatched).count();
++  last_metrics_.copy_ms = std::chrono::duration<float, std::milli>(t1 - evaluated).count();
+ 
+   return true;
+ }
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -68,11 +68,11 @@
+     return success;
+ }
+ 
+-bool RealtimeRunner::load_model(const char* mlxfn_path) {
++bool RealtimeRunner::load_model(const char* mlxfn_path, bool autostart) {
+     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+     stop_locked();
+     bool success = engine_.load_model(mlxfn_path);
+-    if (success) start_locked();
++    if (success && autostart) start_locked();
+     return success;
+ }
+ 
+--- a/core/include/magentart/mlx_engine.h
++++ b/core/include/magentart/mlx_engine.h
+@@ -91,6 +91,10 @@
+ struct FrameMetrics {
+   float transformer_ms = 0; ///< GPU time for the transformer step.
+   float total_ms = 0;       ///< End-to-end wall time including bookkeeping.
++  float prepare_ms = 0;
++  float dispatch_ms = 0;    ///< CPU graph construction, not GPU execution.
++  float evaluate_ms = 0;    ///< Scheduling plus waiting for computation.
++  float copy_ms = 0;
+ };
+ 
+ class MLXEngine {
+--- a/core/include/magentart/realtime_runner.h
++++ b/core/include/magentart/realtime_runner.h
+@@ -107,7 +107,7 @@
+         return engine_.init_assets(resource_dir);
+     }
+     bool load_musiccoca_model(const char* resource_dir, const char* subfolder);
+-    bool load_model(const char* mlxfn_path);
++    bool load_model(const char* mlxfn_path, bool autostart = true);
+     bool load_prefill_model(const char* spectrostream_mlxfn_path,
+                             const char* prefill_mlxfn_path);
+     /// Stop the inference loop, encode + prefill the supplied audio (with

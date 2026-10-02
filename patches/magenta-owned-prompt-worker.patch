@@ -1,3 +1,7 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
 diff --git a/core/src/mlx_engine.cpp b/core/src/mlx_engine.cpp
 index 7e2e0dd..beb966b 100644
 --- a/core/src/mlx_engine.cpp

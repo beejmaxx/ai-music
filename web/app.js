@@ -40,7 +40,7 @@ $('breakdown').onclick = () => command(program === 'funk-study'
   : 'ramp 0 2 mix kick 0\nramp 0 2 mix bass .1\nramp 0 2 mix clap 0\nramp 0 4 mix hats .06\nramp 0 4 mix pad .6\nramp 0 4 filter 1400\nramp 0 4 delay .45'
     + (program === 'french-house' ? '' : '\nat 0 melody 0 - 2 - 3 - 2 - 4 - 3 - 2 - 0 -'), true);
 $('build').onclick = () => command(program === 'funk-study'
-  ? 'at 0 mix kick 0\nat 0 mix bass .2\nramp 0 8 filter 14000\nramp 0 7 mix hats .26\nramp 0 7 mix clap .4\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .9\nat 8 mix bass .7\nat 8 mix lead .32\nat 8 mix clap .42\nat 8 mix hats .18\nat 8 delay .035'
+  ? 'at 0 mix kick 0\nat 0 mix bass .2\nramp 0 8 filter 12000\nramp 0 7 mix hats .7\nramp 0 7 mix clap .85\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .82\nat 8 mix bass .58\nat 8 mix lead .43\nat 8 mix clap .85\nat 8 mix hats .7\nat 8 delay .025'
   : program === 'french-house'
   ? 'at 0 mix kick 0\nat 0 mix bass .2\nramp 0 8 filter 7500\nramp 0 8 mix pad .55\nramp 0 7 mix hats .3\nramp 0 7 mix clap .4\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .9\nat 8 mix bass .7\nat 8 mix clap .32\nat 8 mix hats .25\nat 8 delay .14'
   : 'at 0 mix kick 0\nat 0 mix bass .1\nat 0 melody 0 2 3 2 4 2 3 5 0 2 3 4 5 4 3 2\nat 0 bassline 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1\nramp 0 8 filter 11000\nramp 0 8 mix lead .55\nramp 0 7 mix hats .4\nramp 0 7 mix clap .45\nat 7 mix hats 0\nat 7 mix clap 0\nat 8 mix kick .9\nat 8 mix bass .65\nat 8 mix clap .32\nat 8 mix hats .3\nat 8 delay .23', true);

@@ -1,0 +1,110 @@
+LESSON 1: FROM A DESCRIPTION TO AI-GENERATED AUDIO
+
+Goal: understand and control one short generation using our existing C++ host.
+
+The path we are learning
+
+    Your description -> trained music model -> stereo audio -> player or file
+
+Training is how a model's parameters are learned from data. We are starting
+with a model that has already been trained: Magenta RealTime 2 small.
+Inference is running that model to generate new audio from a prompt.
+Playback sends the generated samples to an audio device at the right speed.
+
+Our project has two different sound sources:
+
+  --source synth     Our C++ instruments and note patterns make the sound.
+  --source magenta   A trained neural music model generates the sound.
+
+The funk-study radio program currently uses synth. This lesson uses magenta.
+
+Exercise A: one prompt, one short generation
+
+Run this from the project directory in your terminal:
+
+./build-ai/ai-music-cpu --source magenta --offline --duration 6 --no-input \
+  --style "instrumental electronic funk, steady four-on-the-floor drums, gritty synth bass, a short repeating synth riff, 112 BPM" \
+  --record recordings/lesson-01-a.wav
+
+The switches mean:
+
+  --source magenta    Use the trained audio model.
+  --style            Describe the musical direction.
+  --offline          Let generation finish at the model's own speed.
+  --duration 6       Generate six seconds of audio.
+  --no-input         Run this short experiment without terminal controls.
+  --record           Save the generated audio for listening afterwards.
+
+Offline generation opens no audio output. The saved file is an experiment,
+not live radio. It contains newly generated model output if generation succeeds.
+Output filenames must be new; the recorder protects existing files.
+
+The CPU executable works without Metal GPU access. Expect several minutes for
+this short exercise. If your terminal has GPU access, build-ai/ai-music can run
+the same command using Metal. CPU build instructions are in README.md.
+
+Once the command finishes, listen with:
+
+afplay recordings/lesson-01-a.wav
+
+Exercise B: change one thing
+
+Run the same command with two edits:
+  1. Replace "gritty synth bass" with "rounded synth bass".
+  2. Change the output filename to recordings/lesson-01-b.wav.
+
+Listen for the bass's texture and attack. Which output fits your idea better?
+The current host does not expose a random seed, so these are exploratory
+comparisons: the model can change other details too. A phrase in a prompt is
+a request, not a guarantee of a particular instrument, exact tempo, or result.
+
+Where the code connects
+
+Open src/magenta_source.cpp and find:
+
+  runner_.load_model(model.c_str(), false)
+    Loads the already-trained model into the inference runtime.
+
+  runner_.set_text_prompt(prompt)
+    Sends your musical description for encoding and conditioning.
+
+  runner_.start()
+    Starts background generation.
+
+  runner_.read_audio_stereo(left, right, frames, true)
+    Retrieves generated stereo samples, waiting when needed in offline mode.
+
+  src/audio.cpp and src/recorder.cpp
+    Apply the host's processing/output gain and write the audio file.
+
+Why continuous radio is a later step
+
+Continuous playback needs new audio ready before the playback buffer empties.
+An earlier local test generated 30 seconds of audio in 128.91 seconds. That
+run worked offline but could not sustain live playback. A larger buffer alone
+cannot fix a model that continually generates more slowly than playback.
+
+Current verification, 2026-10-01
+
+The Metal API reports zero accessible devices in the current agent process,
+even though macOS lists the M1 GPU. The GPU executable now detects this before
+MLX's device-array access. The cause of the missing GPU access remains outside
+this repair.
+
+The separate CPU backend generated six seconds of 48 kHz stereo neural audio
+in 312.58 seconds, including startup. The recording has exactly 288,000 frames,
+with no counted gaps, invalid samples, or recorder drops. Peak process memory
+was about 3.6 GiB. Listen to the completed experiment:
+
+afplay recordings/lesson-01-ai.wav
+
+Its numerical import tests pass, including repeated calls with changed inputs
+and weights. The existing audio-engine and score tests also pass. Evidence is
+under validation/metal-fix/, especially final-generation.json. CPU generation
+is working, but it cannot supply live radio at this speed. This test establishes
+that the model runs; musical quality still needs your listening feedback.
+
+Primary model documentation:
+https://github.com/magenta/magenta-realtime/blob/main/docs/index.md
+
+The next lesson can follow one generated audio block through the C++ host.

@@ -1,5 +1,8 @@
 # AI Music
 
+[![CI](https://github.com/beejmaxx/ai-music/actions/workflows/ci.yml/badge.svg)](https://github.com/beejmaxx/ai-music/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 A small C++20 host for continuously generated instrumental audio. Change its
 controls in the terminal or save a command file while it plays. The audio
 engine, controls, and recorder are shared by three sources:
@@ -13,12 +16,38 @@ engine, controls, and recorder are shared by three sources:
 - **magenta**: the actual Magenta RealTime 2 small model, running locally through
   Google's C++/MLX inference engine.
 
-The current host targets Apple Silicon macOS. Codex can act as the composer/DJ
-through this chat by editing a score while C++ performs it continuously.
+The current host targets macOS; the neural Metal backend requires Apple Silicon.
+Control it through the terminal, a watched command file, or the local browser
+player. The procedural station needs no model download or API key.
 
-**Current limitation:** local real-time AI tests miss audio deadlines on this
-M1. Use offline mode for AI recordings. The procedural source supports live
-playback; uninterrupted real-time AI is still a performance milestone to reach.
+To learn the neural audio path, start with
+[Lesson 1: from a description to AI-generated audio](lessons/01-ai-audio.txt).
+It explains training, inference, and playback, then traces a short prompt
+experiment through the existing C++ integration.
+
+**Experimental neural playback:** the five-second buffer configuration passed
+a two-minute native test on an M1, but the ten-minute attempt still encountered underruns
+under changing system load. Use offline mode for uninterrupted AI recordings.
+The browser station uses the procedural synth. See [validation status](docs/validation.md).
+
+## Quick start
+
+Requires macOS, Xcode command-line tools, CMake 3.27+, and Python 3.10+.
+
+```sh
+git clone https://github.com/beejmaxx/ai-music.git
+cd ai-music
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 2
+python3 scripts/station.py
+```
+
+Open <http://127.0.0.1:8799> and click **Listen**. This starts procedural music;
+the optional [neural build](#build-and-run-the-ai-source) downloads its own model
+assets. See [CONTRIBUTING.md](CONTRIBUTING.md) for tests and development.
+
+Source code is licensed under [Apache 2.0](LICENSE). Model weights are downloaded
+separately under their upstream terms; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Run your personal station
 
@@ -39,7 +68,7 @@ library; there are no additional server packages or audio files to load. Pause
 stops listening while the station keeps composing. The page shows the current
 section and provides a mixer, breakdown/build/drop cues, hold, resume, and next
 chapter. It binds only to `127.0.0.1`. Use `--port NUMBER` if needed. Ctrl-C in
-pane 2 stops the local server and its audio engine. Browser buffering adds
+the terminal stops the local server and its audio engine. Browser buffering adds
 roughly 180 ms plus device/network scheduling; live controls update the engine.
 After restarting the server, refresh the page and click Listen again.
 
@@ -55,13 +84,16 @@ four-bar lead phrases, eight-chord progressions, changing bass pitches/rhythms,
 and pluck/wide/soft lead timbres. The native C++ CLI defaults to this program.
 Drumless breakdowns remove kick-driven sidechain pumping. Neither director
 changes tempo; manual tempo commands remain available. Each program continues
-until stopped, with bounded memory. This is a procedural arranger written by Codex,
-not a continuously running language model or neural waveform generator.
+until stopped, with bounded memory. This arranger uses procedural instruments
+and score rules; neural generation is available through the separate Magenta source.
 No separate local AI installation or API key is needed for this workflow.
 
 `--program funk-study` runs a sixteen-bar reference study at a fixed **111 BPM**.
-It uses a four-bar chromatic riff, a distorted pulse voice with a second tone a
-fourth above, and a short lead dropout to expose the drum/bass groove. It is an
+It uses a four-bar riff with notes anticipated before the barline and tied
+across it, a distorted pulse voice with a second tone a fourth above, and a
+short lead dropout to expose the drum/bass groove. The riff's upper contour
+was revised against the local reference; the score specifies the lower member
+of each fourth. It is an
 approximation for sound-design comparison, not a verified note-for-note cover.
 The voice design draws on the band-pass, interval, and overdrive approach in
 [Reverb Machine's reconstruction](https://reverbmachine.com/blog/daft-punk-homework-synth-sounds/)
@@ -69,7 +101,30 @@ and [Syntorial's patch study](https://www.syntorial.com/preset-recipe/daft-punk-
 The user's reference MP3s stay in the ignored `recordings/references/` directory;
 they are not loaded or sampled by the live engine.
 
-Describe changes to Codex here; it can edit `live/current.commands` atomically.
+The revised kit combines a short kick, a snare body with filtered clap bursts,
+and metallic hats with different accents for closed, open, and ghost hits.
+The grit voice runs its oscillators, resonant filter, and overdrive at twice
+the sample rate, filters the result before downsampling, and uses lighter
+kick ducking so sustained notes remain audible. Its bass part sits an octave
+higher than the first study, with a new turnaround and a revised mix.
+
+For short sound-design comparisons, build the project and render a chapter
+through the same synthesis, mixer, and effects path as live playback:
+
+```sh
+./build/music-render --program funk-study recordings/funk-audition.wav 8.64865
+# Or render a score file; the optional last argument is master volume (0..1).
+./build/music-render examples/live-french-house.commands recordings/house-audition.wav 12 .36
+```
+
+`music-render` produces an audition file without opening an audio device.
+Program auditions cover at most one chapter; score files run for the requested
+duration. Existing output files are protected from overwrite. Compare patches
+at matched listening volume and audition the instruments separately. Audio
+integrity tests check timing, bounds, and dropouts; they do not establish that a
+patch sounds good. Live playback continues to synthesize every block.
+
+Edit `live/current.commands` to change the score while it plays.
 The whole score is validated before it replaces future cues. The audio clock
 and existing effect tails continue. `cancel` stops scheduled cues and the
 automatic director, holding the current groove. `quit` stops playback.
@@ -194,7 +249,7 @@ python3 -m venv .deps/native-python
 .deps/native-python/bin/python -m pip install 'mlx==0.31.1'
 python3 scripts/download_models.py
 cmake -S . -B build-ai -DAI_MUSIC_MAGENTA=ON -DCMAKE_BUILD_TYPE=Release \
-  -DAI_MUSIC_MLX_ROOT="$(.deps/native-python/bin/python -m mlx --cmake-dir)"
+  -DAI_MUSIC_MLX_ROOT="$(.deps/native-python/bin/python -c 'import sysconfig; print(sysconfig.get_path("platlib") + "/mlx")')"
 cmake --build build-ai --target ai-music --parallel 2
 ./build-ai/ai-music --source magenta --offline --duration 30 \
   --record recordings/first-ai.wav
@@ -207,8 +262,121 @@ Apple's Metal toolchain (`xcrun metal --version`); install it if needed with
 one slow MLX CPU fallback; the Metal inference path retains release optimization.
 The prebuilt path follows [MLX's C++ guide](https://ml-explore.github.io/mlx/build/html/dev/mlx_in_cpp.html).
 
+### Check GPU access
+
+If Metal fails to initialize, run this from a regular Terminal to compare GPU
+access with the failing process:
+
+```sh
+python3 scripts/check_gpu.py
+```
+
+The script compiles a tiny Metal kernel and verifies its calculation. If that
+passes, it uses the existing `build-ai/ai-music` executable and cached models to
+render six seconds of AI audio on Metal. It checks the recording and saves the
+logs, timing, audio, and `report.json` under `validation/gpu-check-*`. This is an
+offline diagnostic; it does not start playback or establish live performance.
+Use `--probe-only` to skip the model render. The script also works from another
+directory when called by its absolute path.
+
+The probe distinguishes missing GPU access from an inference or recording
+failure. Its short offline render includes startup time and does not establish
+sustained real-time performance. Keep the generated report when comparing
+execution environments.
+
+### Measure and validate live inference
+
+The inference path caches calculations that depend only on fixed model weights
+before compiling the streaming graph. Prompts and recurrent state remain dynamic.
+Model loading also leaves the generator stopped until the initial prompt and
+buffer settings are ready, avoiding a discarded startup run.
+
+Build and run the performance comparison in a Terminal with Metal access:
+
+```sh
+cmake --build build-ai --target ai-music music-benchmark --parallel 2
+python3 scripts/tune_live.py --play
+```
+
+The script compares the uncached graph, cached constants, and cached constants
+with larger Metal command batches. Each configuration gets 25 warmup frames and
+250 timed frames. Each frame produces 40 ms of audio; startup time is excluded
+from the reported throughput. CSV files break down input preparation, graph
+construction, evaluation/waiting, and audio copying. Power settings are captured
+in the report directory; the script does not change them. Low Power Mode was
+enabled on AC power in the 2026-10-01 inspection, so test with it disabled to
+measure normal performance.
+
+If a configuration generates faster than playback, the script runs a two-minute
+CoreAudio test with two encoded prompt updates, complete 48 kHz stereo PCM16 WAV
+validation, and zero allowed underruns, invalid samples, or recording drops.
+The test checks the Metal backend identity, accepted style commands, new prompt
+encoding results, and audio progress after each update. It uses the same initial
+style as subsequent playback and saves each update's observed completion latency.
+The native output callback actually runs; `--silent-output` zeroes only the
+speaker samples after the generated audio has been recorded. The test requires
+valid continuous callback timestamps, no callback errors or overruns, and no
+reported device overloads with monitoring active. Finite native runs stop
+recording at the exact requested frame count.
+Only a passing CoreAudio test enables continuous speaker playback with `--play`.
+Omitting that flag keeps speaker output silent. The separate `--no-audio`
+software sink retains its deadline counters (`sink_deadline_misses` and
+`sink_max_late_ms`); those do not measure the native audio callback. Validation failures
+remain active under Python's `-O` mode and are retained in `report.json`.
+This establishes the measured run, not subjective musical quality or 24-hour
+reliability. If every configuration is too slow, the script saves profiles and
+reports failure.
+Evidence is retained under `validation/live-tuning-*`.
+
+### Offline AI when Metal is unavailable
+
+The GPU executable checks for an accessible Metal device before loading the
+model. If it reports no device, a separate CPU executable can generate short
+recordings. The CPU path runs the actual Magenta model and requires `--offline`.
+It is substantially slower than playback and uses more memory for unpacked
+weights; it is intended for experiments and learning.
+The 2026-10-01 CPU test produced six seconds of 48 kHz stereo audio in 312.58
+seconds with no counted audio gaps, invalid samples, or recording drops; peak
+process memory was about 3.6 GiB. The output is `recordings/lesson-01-ai.wav`,
+with timing and signal checks in `validation/metal-fix/final-generation.json`.
+
+After configuring `build-ai` above, build the optional CPU runtime:
+
+```sh
+git clone --branch v0.31.1 --depth 1 https://github.com/ml-explore/mlx.git .deps/mlx-cpu-src
+cmake -S cmake/mlx-cpu -B build-mlx-cpu \
+  -DAI_MUSIC_MLX_SOURCE="$PWD/.deps/mlx-cpu-src" \
+  -DCMAKE_BUILD_TYPE=Release -DMLX_USE_CCACHE=OFF \
+  -DCMAKE_INSTALL_PREFIX="$PWD/.deps/mlx-cpu"
+cmake --build build-mlx-cpu --target mlx --parallel 2
+cmake --install build-mlx-cpu
+cmake -S . -B build-ai -DAI_MUSIC_MLX_CPU_ROOT="$PWD/.deps/mlx-cpu"
+cmake --build build-ai --target ai-music-cpu --parallel 2
+./build-ai/ai-music-cpu --source magenta --offline --duration 6 --no-input \
+  --style "instrumental electronic funk, gritty synth bass, 112 BPM" \
+  --record recordings/first-cpu-ai.wav
+```
+
+An existing MLX v0.31.1 source checkout can be passed as `AI_MUSIC_MLX_SOURCE`.
+This runtime remaps imported GPU streams to CPU, expands the model's fused
+normalization/attention/dequantization operations, and reuses constant matrix
+weights with Accelerate. Recurrent state remains an input to every frame.
+The separate `libmlx_cpu` library keeps those adaptations out of the Metal path.
+
+Numerical import checks use tiny exported GPU graphs, so they need no GPU or
+model download. They cover normalization, attention masks/sinks, dequantization,
+and matrix multiplication with both constant and variable weights:
+
+```sh
+cmake -S cmake/mlx-cpu -B build-mlx-cpu -DAI_MUSIC_CPU_IMPORT_TESTS=ON
+cmake --build build-mlx-cpu --target mlx_cpu_import_tests --parallel 2
+ctest --test-dir build-mlx-cpu --output-on-failure
+```
+
+### Generation and live controls
+
 Run commands from the repository directory, or pass an absolute `--model-dir`
-path. The first model start compiles GPU kernels and can take longer than later
+path. The first Metal model start compiles GPU kernels and can take longer than later
 starts. The small model is selected for the M1; the model's musical quality and
 the host's ability to play continuously are separate things to evaluate.
 
@@ -275,7 +443,21 @@ peak, generation time per 40 ms model frame, queued audio, prompt status
 (`1` encoding, `2` ready, `3` failed), peak process memory, and recording drops.
 Exit status `2` means the run encountered audio gaps or recording drops. A file
 with gaps is retained for diagnosis. Larger buffers trade control latency for
-resilience; this host uses 160 ms within the upstream runner's capacity.
+resilience; Metal playback uses a 5,000 ms buffer, primed before model audio
+begins. The CPU offline host retains 160 ms. `AI_MUSIC_BUFFER_MS=120..5000`
+overrides the capacity for diagnostics. Style changes take effect after prompt
+encoding, generation, and the queued audio have reached the output.
+
+The Metal host requests 1 GiB of MLX GPU-memory residency capacity before loading
+the model to reduce eviction under memory pressure. This is a process-local
+request on supported devices, not a guarantee against competing GPU work.
+`AI_MUSIC_WIRED_MB=0` disables it; values from 0 to 2048 override the request.
+
+Native output starts with silence while the model primes its queue, then begins
+consuming music at an audio callback boundary. Status retains cumulative audio
+device/callback counters and separates preparation (`audio_warmup_*`) from
+model playback (`audio_active_*`). Preparation never consumes or records model
+audio; any error after playback activation still fails validation.
 
 ## Architecture and next pieces
 
@@ -311,10 +493,13 @@ listener service can control separate engine instances through the same scores.
 cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 python3 tests/live_controls.py build/ai-music
+python3 tests/playback_timing.py build/ai-music
+python3 tests/live_tuning.py
+python3 tests/stream_check.py
 python3 tests/web_station.py
 python3 tests/web_station.py --program funk-study
-# Optional: ten-minute AI check with two live style changes and an audio report.
-python3 scripts/check_stream.py
+# Optional: ten-minute native AI callback check; speakers silent, recording preserved.
+python3 scripts/check_stream.py --coreaudio
 # Gap-free offline recording and live-control check (not a real-time test).
 python3 scripts/check_stream.py --offline --duration 30
 python3 tests/ai_shutdown.py
@@ -335,18 +520,16 @@ transactional rejection of bad scores, same-origin controls, and clean shutdown.
 Run logs and experimental
 recordings belong in the ignored `validation/` and `recordings/` directories.
 
-On the development M1 (16 GB), the core tests, watched-file integration test,
-and muted CoreAudio smoke test passed. A 30-second offline AI render with two
-prompt changes also passed: 1,440,000 stereo frames, no underruns, invalid samples,
-or recording drops. It took 128.91 seconds including startup. The local listening
-sample is `recordings/preview.wav`; its report is
-`validation/ai-offline-stereo/report.json`.
+The current five-second-buffer neural configuration passed a two-minute native
+test on an M1 with both prompt changes and no counted playback errors. Its
+ten-minute attempt failed when model generation exhausted the buffer at about
+173 seconds. **Sustained neural playback remains experimental.** See the
+[published validation notes and condensed evidence](docs/validation.md) for
+the configurations, limits, and reproduction commands.
 
-The real-time 30-second trial failed with 2,219 underrun callbacks. Increasing
-buffering cannot sustain playback when average generation is slower than audio
-consumption. The ten-minute uninterrupted AI milestone has **not** been met.
-The live station uses the synth while neural inference remains an independent
-performance experiment.
+The live browser station uses the synth. CI validates the default engine and
+tooling without model assets; it does not certify neural playback performance.
+Raw recordings and machine-specific diagnostic logs remain local.
 
 Upstream: [Magenta RealTime 2](https://github.com/magenta/magenta-realtime),
 [model release](https://huggingface.co/google/magenta-realtime-2).

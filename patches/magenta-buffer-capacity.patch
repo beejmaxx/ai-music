@@ -1,0 +1,81 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
+--- a/core/include/magentart/ring_buffer.h
++++ b/core/include/magentart/ring_buffer.h
+@@ -35,8 +35,8 @@
+ 
+ class RingBuffer {
+ public:
+-    /// Maximum buffered samples (~4 model blocks). Must be a power of two.
+-    static constexpr size_t kCapacity = 8192;
++    /// Maximum buffered samples (~5.4 seconds at 48 kHz). Must be a power of two.
++    static constexpr size_t kCapacity = 262144;
+ 
+     RingBuffer() : buffer_{}, write_pos_(0), read_pos_(0), virtual_capacity_(2048) {}
+ 
+@@ -118,6 +118,14 @@
+     std::atomic<size_t> virtual_capacity_;
+ };
+ 
++// Prime complete model frames while leaving room below the virtual capacity.
++// A zero/undersized capacity gets one checked write, avoiding unsigned underflow.
++inline size_t priming_frame_count(size_t capacity, size_t frame_samples) {
++    if (!frame_samples) return 0;
++    const auto count = capacity ? (capacity - 1) / frame_samples : 0;
++    return count ? count : 1;
++}
++
+ // Producer-only paired write. The consumer releases L and R separately, so
+ // checking only one channel can publish L while R still has insufficient space.
+ // Capacity must remain fixed while the producer and consumer are active.
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -29,6 +29,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <thread>
++#include <stdexcept>
+ 
+ #include <mlx/mlx.h>
+ #ifdef __APPLE__
+@@ -190,11 +191,14 @@
+ 
+     ring_L_.reset();
+     ring_R_.reset();
+-    // 3-frame priming to prevent initial audio underruns
+-    for (int i = 0; i < 3; ++i) {
++    // Prime the configured reserve before starting playback (160 ms stays 3 frames).
++    const auto prime_frames = priming_frame_count(
++        std::min(ring_L_.get_virtual_capacity(), ring_R_.get_virtual_capacity()), kFrameSamples);
++    for (size_t i = 0; i < prime_frames; ++i) {
+         detail::AutoreleasePool pool;
+-        engine_.generate_frame(audio_buf_L_, audio_buf_R_);
+-        write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples);
++        if (!engine_.generate_frame(audio_buf_L_, audio_buf_R_) ||
++            !write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples))
++            throw std::runtime_error("Failed to prime the configured audio buffer");
+     }
+     running_.store(true, std::memory_order_relaxed);
+     thread_ = std::thread(&RealtimeRunner::inference_loop, this);
+@@ -441,10 +445,15 @@
+             engine_.reset_state();
+             ring_L_.reset();
+             ring_R_.reset();
+-            // 3-frame priming to prevent audio underruns on reset
+-            for (int i = 0; i < 3; ++i) {
+-                engine_.generate_frame(audio_buf_L_, audio_buf_R_);
+-                write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples);
++            const auto prime_frames = priming_frame_count(
++                std::min(ring_L_.get_virtual_capacity(), ring_R_.get_virtual_capacity()), kFrameSamples);
++            for (size_t i = 0; i < prime_frames; ++i) {
++                if (!engine_.generate_frame(audio_buf_L_, audio_buf_R_) ||
++                    !write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples)) {
++                    running_.store(false, std::memory_order_relaxed);
++                    music::log_line("[model] Failed to prime the configured audio buffer on reset");
++                    return;
++                }
+             }
+             continue;
+         }

@@ -1,6 +1,7 @@
 #include "music/audio.hpp"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -73,9 +74,97 @@ namespace {
 void check(OSStatus code, const char* operation) {
   if (code != noErr) throw std::runtime_error(std::string(operation) + " failed (CoreAudio " + std::to_string(code) + ")");
 }
+constexpr AudioObjectPropertyAddress overload_address{
+  kAudioDeviceProcessorOverload, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
 }  // namespace
 
-AudioOutput::AudioOutput(Engine& engine) : engine_(engine) {
+OSStatus AudioCallbackState::render(const AudioTimeStamp* timestamp, UInt32 count, AudioBufferList* data,
+                                    AudioUnitRenderActionFlags* flags) noexcept {
+  const auto started = std::chrono::steady_clock::now();
+  if (!callback_active_ && activation_requested_.load(std::memory_order_acquire)) {
+    phase_and_warmup_overloads_.fetch_or(active_bit, std::memory_order_acq_rel);
+    callback_active_ = true;
+  }
+  auto& counters = callback_active_ ? active_ : warmup_;
+  counters.callbacks.fetch_add(1, std::memory_order_relaxed);
+  const auto finish = [&](OSStatus status) {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    if (std::uint64_t(elapsed) > counters.max_callback_ns.load(std::memory_order_relaxed))
+      counters.max_callback_ns.store(elapsed, std::memory_order_relaxed);
+    if (count && double(elapsed) > double(count) * 1e9 / sample_rate)
+      counters.callback_overruns.fetch_add(1, std::memory_order_relaxed);
+    return status;
+  };
+  if (!timestamp || !(timestamp->mFlags & kAudioTimeStampSampleTimeValid) ||
+      !std::isfinite(timestamp->mSampleTime)) {
+    counters.invalid_timestamps.fetch_add(1, std::memory_order_relaxed);
+    have_timestamp_ = false;
+  } else {
+    if (have_timestamp_ && std::abs(timestamp->mSampleTime - next_sample_time_) > .5)
+      counters.timestamp_discontinuities.fetch_add(1, std::memory_order_relaxed);
+    next_sample_time_ = timestamp->mSampleTime + count;
+    have_timestamp_ = true;
+  }
+  if (!data || data->mNumberBuffers != 1 || !data->mBuffers[0].mData ||
+      data->mBuffers[0].mNumberChannels != 2 ||
+      data->mBuffers[0].mDataByteSize < std::size_t(count) * sizeof(float) * 2) {
+    counters.callback_errors.fetch_add(1, std::memory_order_relaxed);
+    return finish(kAudio_ParamError);
+  }
+  auto* output = static_cast<float*>(data->mBuffers[0].mData);
+  const auto rendered = callback_active_ ? std::min<std::uint64_t>(count, frame_limit_ - rendered_frames_) : 0;
+  if (rendered) engine_.render(output, rendered);
+  rendered_frames_ += rendered;
+  // Record/stream the rendered audio before silencing only the hardware buffer.
+  const auto first_silent = silent_output_ ? 0 : rendered;
+  std::fill(output + first_silent * 2, output + std::size_t(count) * 2, 0.f);
+  if (flags && (silent_output_ || !rendered)) *flags |= kAudioUnitRenderAction_OutputIsSilence;
+
+  if (callback_active_ && rendered_frames_ == frame_limit_) done_.store(true, std::memory_order_release);
+  return finish(noErr);
+}
+
+void AudioCallbackState::note_device_overload() noexcept {
+  auto phase = phase_and_warmup_overloads_.load(std::memory_order_acquire);
+  while (!(phase & active_bit)) {
+    if (phase_and_warmup_overloads_.compare_exchange_weak(phase, phase + 1,
+          std::memory_order_acq_rel, std::memory_order_acquire)) return;
+  }
+  active_device_overloads_.fetch_add(1, std::memory_order_relaxed);
+}
+
+AudioPhaseMetrics AudioCallbackState::PhaseCounters::snapshot() const noexcept {
+  AudioPhaseMetrics result;
+  result.callbacks = callbacks.load(std::memory_order_relaxed);
+  result.timestamp_discontinuities = timestamp_discontinuities.load(std::memory_order_relaxed);
+  result.invalid_timestamps = invalid_timestamps.load(std::memory_order_relaxed);
+  result.callback_overruns = callback_overruns.load(std::memory_order_relaxed);
+  result.callback_errors = callback_errors.load(std::memory_order_relaxed);
+  result.max_callback_ms = double(max_callback_ns.load(std::memory_order_relaxed)) / 1e6;
+  return result;
+}
+
+AudioOutputMetrics AudioCallbackState::metrics() const noexcept {
+  AudioOutputMetrics result;
+  result.warmup = warmup_.snapshot();
+  result.active = active_.snapshot();
+  result.active.device_overloads = active_device_overloads_.load(std::memory_order_relaxed);
+  const auto phase = phase_and_warmup_overloads_.load(std::memory_order_acquire);
+  result.warmup.device_overloads = phase & ~active_bit;
+  result.active_started = (phase & active_bit) != 0;
+  result.callbacks = result.warmup.callbacks + result.active.callbacks;
+  result.timestamp_discontinuities = result.warmup.timestamp_discontinuities + result.active.timestamp_discontinuities;
+  result.invalid_timestamps = result.warmup.invalid_timestamps + result.active.invalid_timestamps;
+  result.callback_overruns = result.warmup.callback_overruns + result.active.callback_overruns;
+  result.callback_errors = result.warmup.callback_errors + result.active.callback_errors;
+  result.device_overloads = result.warmup.device_overloads + result.active.device_overloads;
+  result.max_callback_ms = std::max(result.warmup.max_callback_ms, result.active.max_callback_ms);
+  return result;
+}
+
+AudioOutput::AudioOutput(Engine& engine, bool silent_output, std::uint64_t frame_limit, bool initially_active)
+    : callback_state_(engine, silent_output, frame_limit, initially_active) {
   AudioComponentDescription desc{};
   desc.componentType = kAudioUnitType_Output;
   desc.componentSubType = kAudioUnitSubType_DefaultOutput;
@@ -99,17 +188,49 @@ AudioOutput::AudioOutput(Engine& engine) : engine_(engine) {
     check(AudioUnitSetProperty(unit_, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof(cb)), "Set audio callback");
     check(AudioUnitInitialize(unit_), "Initialize audio output");
   } catch (...) { AudioComponentInstanceDispose(unit_); unit_ = nullptr; throw; }
+  // Overload notifications are optional for ordinary playback. Certification
+  // can require monitoring explicitly, without making unsupported devices fail.
+  device_listener_ = AudioUnitAddPropertyListener(unit_, kAudioOutputUnitProperty_CurrentDevice,
+                                                 device_changed, this) == noErr;
+  UInt32 size = sizeof(device_);
+  if (AudioUnitGetProperty(unit_, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+                           0, &device_, &size) == noErr && device_ != kAudioObjectUnknown &&
+      AudioObjectHasProperty(device_, &overload_address)) {
+    overload_listener_ = AudioObjectAddPropertyListener(device_, &overload_address, overload, this) == noErr;
+  }
 }
 AudioOutput::~AudioOutput() {
-  if (unit_) { stop(); AudioUnitUninitialize(unit_); AudioComponentInstanceDispose(unit_); }
+  if (unit_) {
+    stop();
+    if (overload_listener_) AudioObjectRemovePropertyListener(device_, &overload_address, overload, this);
+    if (device_listener_) AudioUnitRemovePropertyListenerWithUserData(
+        unit_, kAudioOutputUnitProperty_CurrentDevice, device_changed, this);
+    AudioUnitUninitialize(unit_);
+    AudioComponentInstanceDispose(unit_);
+  }
 }
 void AudioOutput::start() { check(AudioOutputUnitStart(unit_), "Start audio output"); }
 void AudioOutput::stop() noexcept { if (unit_) AudioOutputUnitStop(unit_); }
-OSStatus AudioOutput::callback(void* context, AudioUnitRenderActionFlags*, const AudioTimeStamp*,
-                               UInt32, UInt32 count, AudioBufferList* data) {
-  if (!data || data->mNumberBuffers != 1 || !data->mBuffers[0].mData ||
-      data->mBuffers[0].mDataByteSize < count * sizeof(float) * 2) return kAudio_ParamError;
-  static_cast<AudioOutput*>(context)->engine_.render(static_cast<float*>(data->mBuffers[0].mData), count);
+AudioOutputMetrics AudioOutput::metrics() const noexcept {
+  auto result = callback_state_.metrics();
+  result.overload_monitoring = overload_listener_ && device_listener_ &&
+                              !device_changed_.load(std::memory_order_relaxed);
+  return result;
+}
+OSStatus AudioOutput::overload(AudioObjectID, UInt32 count, const AudioObjectPropertyAddress* addresses,
+                                void* context) {
+  for (UInt32 index = 0; index < count; ++index)
+    if (addresses[index].mSelector == kAudioDeviceProcessorOverload)
+      static_cast<AudioOutput*>(context)->callback_state_.note_device_overload();
   return noErr;
+}
+void AudioOutput::device_changed(void* context, AudioUnit, AudioUnitPropertyID, AudioUnitScope, AudioUnitElement) {
+  // Do not reconfigure listeners on an audio thread. A device switch invalidates
+  // monitoring for this session; a subsequent validation can open the new device.
+  static_cast<AudioOutput*>(context)->device_changed_.store(true, std::memory_order_relaxed);
+}
+OSStatus AudioOutput::callback(void* context, AudioUnitRenderActionFlags* flags, const AudioTimeStamp* timestamp,
+                               UInt32, UInt32 count, AudioBufferList* data) {
+  return static_cast<AudioOutput*>(context)->callback_state_.render(timestamp, count, data, flags);
 }
 }  // namespace music

@@ -11,24 +11,32 @@ void RadioDirector::program(const std::string& name) {
 
 Score RadioDirector::next_funk() {
   // A short sound-design study, not a verified transcription of Da Funk.
-  chapter_ = "Da Funk: sound study";
+  chapter_ = "Da Funk: revised groove study";
   ++chapter_index_;
   constexpr const char* riffs[] = {
-    "65 ~ ~ ~ 65 ~ ~ - 63 ~ 65 ~ 68 ~ ~ -",
-    "60 ~ ~ ~ 60 ~ ~ - 58 ~ 60 ~ 63 ~ ~ -",
-    "56 ~ ~ ~ 56 ~ ~ - 55 ~ 56 ~ 60 ~ ~ -",
-    "65 ~ ~ ~ 65 ~ ~ - 67 ~ ~ - 68 ~ ~ -",
+    // Upper voice: G, F, G, Bb; D, C, D, F; Bb, A, Bb, D; G, A, Bb.
+    // The grit oscillator adds a fourth, so these are the LOWER pitches.
+    // Anticipate the next phrase by an eighth note, then tie over the barline.
+    "62 ~ ~ ~ ~ ~ ~ ~ 60 ~ 62 ~ 65 ~ 57 ~",
+    "~ ~ ~ ~ ~ ~ ~ ~ 55 ~ 57 ~ 60 ~ 53 ~",
+    "~ ~ ~ ~ ~ ~ ~ ~ 52 ~ 53 ~ 57 ~ 62 ~",
+    "~ ~ ~ ~ ~ ~ ~ ~ 64 ~ ~ ~ 65 ~ ~ -",
+  };
+  constexpr const char* bass[] = {
+    "43 ~ - - - - 43 ~ 43 - - 43 - - 41 43",
+    "43 ~ - - - - 43 ~ 43 - - 43 - 46 41 43",
   };
   std::ostringstream text;
   text << "quantize 4\nat 0 style house\nat 0 drums on\nat 0 voice grit\nat 0 rhythm steady"
-       << "\nat 0 root 41\nat 0 harmony 0 0 0 0 0 0 0 0\nat 0 chord-bars 4"
+       << "\nat 0 root 43\nat 0 harmony 0 0 0 0 0 0 0 0\nat 0 chord-bars 4"
        << "\nat 0 chords sustain\nat 0 chord-voice pad\nat 0 mix pad 0"
-       << "\nramp 0 1 mix kick .9\nramp 0 1 mix clap .42\nramp 0 1 mix hats .18"
-       << "\nramp 0 1 mix bass .7\nramp 0 1 mix lead .32\nramp 0 1 filter 14000\nat 0 delay .035"
-       << "\nat 0 bass-midi 29 ~ - 29 - - 29 ~ 29 ~ - 36 - 41 36 -"
-       << "\nat 8 mix lead 0\nat 10 mix lead .32\nat 12 rhythm drive\nat 14 rhythm steady";
-  for (unsigned bar = 0; bar < 16; ++bar)
+       << "\nat 0 mix kick .82\nat 0 mix clap .85\nat 0 mix hats .7"
+       << "\nat 0 mix bass .58\nat 0 mix lead .43\nat 0 filter 12000\nat 0 delay .025"
+       << "\nat 8 mix lead 0\nat 10 mix lead .43\nat 12 rhythm drive\nat 14 rhythm steady";
+  for (unsigned bar = 0; bar < 16; ++bar) {
     text << "\nat " << bar << " lead-midi " << riffs[bar % 4];
+    text << "\nat " << bar << " bass-midi " << bass[bar % 4 == 3];
+  }
   const auto commands = parse_commands(text.str());
   validate_controls(commands, false, true, true);
   return compile_score(commands);

@@ -1,0 +1,63 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
+--- a/core/include/magentart/ring_buffer.h
++++ b/core/include/magentart/ring_buffer.h
+@@ -118,5 +118,16 @@
+     std::atomic<size_t> virtual_capacity_;
+ };
+ 
++// Producer-only paired write. The consumer releases L and R separately, so
++// checking only one channel can publish L while R still has insufficient space.
++// Capacity must remain fixed while the producer and consumer are active.
++inline bool write_stereo(RingBuffer& left, RingBuffer& right,
++                         const float* data_left, const float* data_right,
++                         size_t count) {
++    if (left.free_space() < count || right.free_space() < count) return false;
++    // Only the consumer can change free space now, and it can only increase it.
++    return left.write(data_left, count) && right.write(data_right, count);
++}
++
+ }  // namespace core
+ }  // namespace magentart
+--- a/core/src/realtime_runner.cpp
++++ b/core/src/realtime_runner.cpp
+@@ -186,8 +186,7 @@
+     for (int i = 0; i < 3; ++i) {
+         detail::AutoreleasePool pool;
+         engine_.generate_frame(audio_buf_L_, audio_buf_R_);
+-        ring_L_.write(audio_buf_L_, kFrameSamples);
+-        ring_R_.write(audio_buf_R_, kFrameSamples);
++        write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples);
+     }
+     running_.store(true, std::memory_order_relaxed);
+     thread_ = std::thread(&RealtimeRunner::inference_loop, this);
+@@ -430,8 +429,7 @@
+             // 3-frame priming to prevent audio underruns on reset
+             for (int i = 0; i < 3; ++i) {
+                 engine_.generate_frame(audio_buf_L_, audio_buf_R_);
+-                ring_L_.write(audio_buf_L_, kFrameSamples);
+-                ring_R_.write(audio_buf_R_, kFrameSamples);
++                write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples);
+             }
+             continue;
+         }
+@@ -467,15 +465,11 @@
+             // the frame. GPU keepalive: tiny GPU ops keep macOS from
+             // downclocking the GPU during idle gaps (causes permanent
+             // ~8 ms latency increase after ~20 sec of running plugin otherwise).
+-            while (ring_L_.free_space() < kFrameSamples &&
+-                   running_.load(std::memory_order_relaxed)) {
++            while (running_.load(std::memory_order_relaxed) &&
++                   !write_stereo(ring_L_, ring_R_, audio_buf_L_, audio_buf_R_, kFrameSamples)) {
+                 auto dummy = mx::array({0.0f}) + mx::array({0.0f});
+                 mx::eval(dummy);
+                 std::this_thread::sleep_for(std::chrono::microseconds(200));
+-            }
+-            if (running_.load(std::memory_order_relaxed)) {
+-                ring_L_.write(audio_buf_L_, kFrameSamples);
+-                ring_R_.write(audio_buf_R_, kFrameSamples);
+             }
+         } else {
+             std::this_thread::sleep_for(std::chrono::milliseconds(10));

@@ -1,5 +1,6 @@
 #include "music/audio.hpp"
 #include "music/commands.hpp"
+#include "music/playback_timing.hpp"
 #include "music/ring.hpp"
 #include <array>
 #include <cmath>
@@ -97,6 +98,23 @@ void engine_test() {
   check(real.peak() < 1e-6f, "Mute fades to silence");
 }
 
+void playback_timing_test() {
+  using namespace std::chrono_literals;
+  using Clock = music::PlaybackTiming::Clock;
+  music::PlaybackTiming timing;
+  const auto start = Clock::time_point{};
+  timing.record(start + 1ms, start + 10ms);
+  timing.record(start + 13ms, start + 20ms);  // Ordinary wake jitter fits in the next block.
+  timing.record(start + 30ms, start + 30ms);
+  check(timing.misses() == 0 && timing.max_late_ms() == 0, "On-time blocks do not count as missed deadlines");
+  timing.record(start + 65ms, start + 40ms);  // Consumer stalls with audio still in its ring.
+  timing.record(start + 66ms, start + 50ms);  // Catch-up does not erase the stall.
+  timing.record(start + 67ms, start + 60ms);
+  timing.record(start + 71ms, start + 80ms);
+  check(timing.misses() == 3 && timing.max_late_ms() == 25,
+        "Missed playback deadlines stay visible after the consumer catches up");
+}
+
 void synth_test() {
   auto source = music::make_synth_source();
   music::Engine engine(*source);
@@ -170,6 +188,32 @@ void bus_routing_test() {
   }
 }
 
+void grit_ducking_test() {
+  // Compare only the musical bus with/without a kick. A foreground sustained
+  // hook must not nearly disappear at every downbeat, even with kick at unity.
+  std::array<double, 2> energy{};
+  for (unsigned drums = 0; drums < 2; ++drums) {
+    auto source = music::make_synth_source();
+    music::Engine controls(*source);
+    const auto commands = music::parse_commands(
+      "tempo 120\nvoice grit\nmix kick 1\nmix clap 0\nmix hats 0\nmix bass 0\nmix lead 1\nmix pad 0\n"
+      "lead-midi 62 ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~");
+    for (const auto& command : commands) music::apply_control(command, *source, controls);
+    source->drums(drums);
+    std::array<float, 128> left{}, right{}, dry_left{}, dry_right{};
+    for (unsigned frame = 0; frame < music::sample_rate * 1.07; frame += left.size()) {
+      source->read_buses(left.data(), right.data(), dry_left.data(), dry_right.data(), left.size());
+      for (unsigned i = 0; i < left.size(); ++i) {
+        const auto time = double(frame + i) / music::sample_rate;
+        if (time > 1.005 && time < 1.06) energy[drums] += left[i] * left[i];
+      }
+    }
+  }
+  check(energy[0] > 1, "Sustained grit hook is audible");
+  check(energy[1] > energy[0] * .7 && energy[1] < energy[0],
+        "Grit hook keeps most of its energy through the kick attack");
+}
+
 std::uint32_t u32(const std::vector<unsigned char>& bytes, std::size_t at) {
   return std::uint32_t(bytes[at]) | (std::uint32_t(bytes[at+1]) << 8) |
     (std::uint32_t(bytes[at+2]) << 16) | (std::uint32_t(bytes[at+3]) << 24);
@@ -200,7 +244,7 @@ void recording_test() {
 
 int main() {
   try {
-    ring_test(); command_test(); engine_test(); synth_test(); bus_routing_test(); recording_test();
+    ring_test(); command_test(); engine_test(); playback_timing_test(); synth_test(); bus_routing_test(); grit_ducking_test(); recording_test();
     std::cout << "Passed: concurrent queue, controls, audio bounds, live synth/mixer/effects, streaming WAV.\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }

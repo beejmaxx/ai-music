@@ -1,5 +1,7 @@
 #include "music/audio.hpp"
 #include "music/commands.hpp"
+#include "music/log.hpp"
+#include "music/playback_timing.hpp"
 #include "music/radio.hpp"
 #include <array>
 #include <chrono>
@@ -10,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <poll.h>
+#include <pthread.h>
 #include <sstream>
 #include <sys/resource.h>
 #include <thread>
@@ -24,7 +27,7 @@ struct Options {
   std::string source = "demo", style, model_dir = "models", record, watch, program = "trance";
   float duration = 0, volume = 0.25f, stats_every = 10;
   int stream_fd = -1;
-  bool no_audio = false, no_input = false, offline = false, radio = false;
+  bool no_audio = false, no_input = false, offline = false, radio = false, silent_output = false;
 };
 
 void usage() {
@@ -40,6 +43,7 @@ void usage() {
     "  --volume 0..1           initial gain (default: 0.25)\n"
     "  --duration SECONDS      stop after this duration; 0 runs indefinitely\n"
     "  --no-audio              consume at real-time speed without speakers\n"
+    "  --silent-output         run native audio output silently; keep recording audible\n"
     "  --offline               render AI to WAV at the model's own speed\n"
     "  --no-input              ignore stdin (for unattended sessions)\n"
     "  --stats-every SECONDS   status interval (default: 10)\n"
@@ -63,6 +67,7 @@ Options options(int argc, char** argv) {
     else if (name == "--volume") result.volume = music::number_in_range(next(), 0, 1);
     else if (name == "--stats-every") result.stats_every = music::number_in_range(next(), 0.1f, 3600);
     else if (name == "--no-audio") result.no_audio = true;
+    else if (name == "--silent-output") result.silent_output = true;
     else if (name == "--offline") { result.offline = true; result.no_audio = true; }
     else if (name == "--no-input") result.no_input = true;
     else if (name == "--radio") result.radio = true;
@@ -84,17 +89,27 @@ Options options(int argc, char** argv) {
     throw std::runtime_error("Program must be trance, french-house, or funk-study");
   if (result.offline && (result.source != "magenta" || result.record.empty() || result.duration <= 0))
     throw std::runtime_error("Use --offline with --source magenta, --record PATH.wav, and a positive --duration");
+  if (result.silent_output && result.no_audio)
+    throw std::runtime_error("Use --silent-output with native audio output, not --no-audio or --offline");
+#ifdef AI_MUSIC_CPU_ONLY
+  if (result.source == "magenta" && !result.offline)
+    throw std::runtime_error("The CPU-only AI build requires --offline, --record PATH.wav, and a positive --duration");
+#endif
   return result;
 }
 
 void status(music::Source& source, const music::Engine& engine, const music::Recorder* recorder,
-            const music::StreamOutput* stream, bool radio, bool custom) {
+            const music::StreamOutput* stream, const music::PlaybackTiming& timing,
+            const music::AudioOutput* audio, bool radio, bool custom) {
   const auto m = source.metrics();
+  const auto a = audio ? audio->metrics() : music::AudioOutputMetrics{};
+  const auto frames = engine.frames();
   rusage usage{};
   getrusage(RUSAGE_SELF, &usage);
-  std::cout << std::fixed << std::setprecision(2)
-    << "[status] seconds=" << double(engine.frames()) / music::sample_rate
-    << " frames=" << engine.frames() << " underruns=" << engine.underruns()
+  std::ostringstream line;
+  line << std::fixed << std::setprecision(2)
+    << "[status] seconds=" << double(frames) / music::sample_rate
+    << " frames=" << frames << " underruns=" << engine.underruns()
     << " invalid_samples=" << engine.invalid_samples()
     << " peak=" << engine.peak() << " volume=" << engine.volume()
     << " muted=" << engine.muted()
@@ -103,19 +118,41 @@ void status(music::Source& source, const music::Engine& engine, const music::Rec
     << " prompt_status=" << m.prompt_status
     << " peak_rss_mb=" << double(usage.ru_maxrss) / (1024 * 1024)
     << " recording_dropped=" << (recorder ? recorder->dropped() : 0)
-    << " stream_dropped=" << (stream ? stream->dropped() : 0);
+    << " stream_dropped=" << (stream ? stream->dropped() : 0)
+    << " sink_deadline_misses=" << timing.misses()
+    << " sink_max_late_ms=" << timing.max_late_ms()
+    << " audio_callbacks=" << a.callbacks
+    << " audio_timestamp_discontinuities=" << a.timestamp_discontinuities
+    << " audio_invalid_timestamps=" << a.invalid_timestamps
+    << " audio_callback_overruns=" << a.callback_overruns
+    << " audio_callback_errors=" << a.callback_errors
+    << " audio_device_overloads=" << a.device_overloads
+    << " audio_overload_monitoring=" << a.overload_monitoring
+    << " audio_max_callback_ms=" << a.max_callback_ms
+    << " audio_active_started=" << a.active_started;
+  const auto phase = [&](const char* prefix, const auto& metrics) {
+    line << ' ' << prefix << "callbacks=" << metrics.callbacks
+      << ' ' << prefix << "timestamp_discontinuities=" << metrics.timestamp_discontinuities
+      << ' ' << prefix << "invalid_timestamps=" << metrics.invalid_timestamps
+      << ' ' << prefix << "callback_overruns=" << metrics.callback_overruns
+      << ' ' << prefix << "callback_errors=" << metrics.callback_errors
+      << ' ' << prefix << "device_overloads=" << metrics.device_overloads
+      << ' ' << prefix << "max_callback_ms=" << metrics.max_callback_ms;
+  };
+  phase("audio_warmup_", a.warmup);
+  phase("audio_active_", a.active);
   if (source.is_synth()) {
     const auto score = engine.score_status();
-    std::cout << " bar=" << 1 + source.beat() / 4
+    line << " bar=" << 1 + source.beat() / 4
       << " bpm=" << source.synth_value(music::Parameter::tempo)
       << " score=" << score.revision << " score_start_bar=" << 1 + score.start_beat / 4
       << " score_end_bar=" << 1 + score.end_beat / 4
       << " cues_remaining=" << score.remaining << " radio=" << radio << " custom=" << custom;
     for (const auto& [name, parameter] : {std::pair{"kick", music::Parameter::kick}, {"clap", music::Parameter::clap},
          {"hats", music::Parameter::hats}, {"bass", music::Parameter::bass}, {"lead", music::Parameter::lead}, {"pad", music::Parameter::pad}})
-      std::cout << ' ' << name << '=' << source.synth_value(parameter);
+      line << ' ' << name << '=' << source.synth_value(parameter);
   }
-  std::cout << std::endl;
+  music::log_line(line.str());
 }
 
 int run(const Options& opts) {
@@ -128,7 +165,12 @@ int run(const Options& opts) {
     source->style(opts.style);
   } else {
 #ifdef AI_MUSIC_MAGENTA
-    source = music::make_magenta_source(opts.model_dir, opts.style, 160);
+#ifdef AI_MUSIC_CPU_ONLY
+    constexpr unsigned buffer_ms = 160;
+#else
+    constexpr unsigned buffer_ms = 5000;
+#endif
+    source = music::make_magenta_source(opts.model_dir, opts.style, buffer_ms);
 #else
     throw std::runtime_error("This build contains the procedural demo only. Rebuild with -DAI_MUSIC_MAGENTA=ON for AI generation.");
 #endif
@@ -138,6 +180,8 @@ int run(const Options& opts) {
   std::unique_ptr<music::StreamOutput> stream;
   if (opts.stream_fd >= 0) stream = std::make_unique<music::StreamOutput>(opts.stream_fd);
   music::Engine engine(*source, recorder.get(), stream.get());
+  music::PlaybackTiming timing;
+  std::unique_ptr<music::AudioOutput> audio;
   engine.volume(opts.volume);
   if (opts.radio) {
     const auto bpm = opts.program == "french-house" ? 124.f : opts.program == "funk-study" ? 111.f : 132.f;
@@ -173,12 +217,16 @@ int run(const Options& opts) {
     }
     for (const auto& cmd : parsed) {
       if (cmd.action == music::Action::quit) quit = true;
-      else if (cmd.action == music::Action::status) status(*source, engine, recorder.get(), stream.get(), radio_enabled, custom_score);
+      else if (cmd.action == music::Action::status) status(*source, engine, recorder.get(), stream.get(), timing, audio.get(), radio_enabled, custom_score);
       else if (cmd.action == music::Action::help) std::cout << music::command_help() << std::flush;
       else if (cmd.action == music::Action::next || (cmd.action == music::Action::radio && cmd.number != 0)) {
         radio_enabled = true; next_chapter();
       }
-      else if (!source->is_synth()) music::apply_control(cmd, *source, engine);
+      else if (!source->is_synth()) {
+        music::apply_control(cmd, *source, engine);
+        if (cmd.action == music::Action::style)
+          music::log_line("[control] style " + cmd.text);
+      }
     }
   };
 
@@ -203,17 +251,34 @@ int run(const Options& opts) {
     }
   };
   reload();
-  source->start();
 
-  std::unique_ptr<music::AudioOutput> audio;
+  const auto limit = opts.duration > 0 ? std::uint64_t(double(opts.duration) * music::sample_rate) : UINT64_MAX;
   std::atomic<bool> clock_done{false};
   std::jthread clock_thread;
+  // Start the device with silence while Source::start primes the model queue.
+  // Model consumption begins at a callback boundary after the queue is ready.
   if (!opts.no_audio) {
-    audio = std::make_unique<music::AudioOutput>(engine);
+    audio = std::make_unique<music::AudioOutput>(engine, opts.silent_output, limit, false);
     audio->start();
+  }
+  source->start();
+  if (!opts.no_audio) {
+    audio->activate();
+    const auto deadline = Clock::now() + std::chrono::seconds(5);
+    while (!audio->active()) {
+      if (Clock::now() > deadline) throw std::runtime_error("Audio output did not activate");
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    music::log_line("[audio] model_playback_active=1 warmup_device_overloads=" +
+        std::to_string(audio->metrics().warmup.device_overloads));
   } else {
-    const auto limit = opts.duration > 0 ? std::uint64_t(double(opts.duration) * music::sample_rate) : UINT64_MAX;
-    clock_thread = std::jthread([&engine, &clock_done, limit, offline = opts.offline](std::stop_token stop) {
+    clock_thread = std::jthread([&engine, &clock_done, &timing, limit, offline = opts.offline](std::stop_token stop) {
+      if (!offline) {
+        // This consumer has a deadline every 512 samples; keep its short work
+        // ahead of the user-initiated model worker. QoS is not a real-time guarantee.
+        const auto error = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        if (error) music::log_line("[sink] Interactive scheduling request failed: " + std::to_string(error));
+      }
       std::array<float, music::block_size * 2> samples{};
       const auto start = Clock::now();
       std::uint64_t frames = 0;
@@ -221,28 +286,30 @@ int run(const Options& opts) {
         const auto count = std::min<std::uint64_t>(music::block_size, limit - frames);
         engine.render(samples.data(), count, offline);
         frames += count;
-        if (!offline)
-          std::this_thread::sleep_until(start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(double(frames) / music::sample_rate)));
+        if (!offline) {
+          const auto deadline = start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(double(frames) / music::sample_rate));
+          timing.record(Clock::now(), deadline);
+          std::this_thread::sleep_until(deadline);
+        }
       }
       clock_done.store(true);
     });
   }
 
-  std::cout << "Running: " << source->name() << " | 48 kHz stereo | "
-    << (opts.offline ? "offline render" : opts.no_audio ? "silent real-time sink" : "default audio output") << '\n';
-  if (!opts.record.empty()) std::cout << "Recording: " << opts.record << '\n';
-  std::cout << "Type help for live controls; quit or Ctrl-C stops cleanly.\n" << std::flush;
+  music::log_line(std::string("Running: ") + source->name() + " | 48 kHz stereo | " +
+    (opts.offline ? "offline render" : opts.no_audio ? "silent real-time sink" : opts.silent_output ? "silent CoreAudio output" : "default audio output"));
+  if (!opts.record.empty()) music::log_line("Recording: " + opts.record);
+  music::log_line("Type help for live controls; quit or Ctrl-C stops cleanly.");
   auto next_stats = Clock::now() + std::chrono::duration<float>(opts.stats_every);
   auto next_watch = Clock::now();
-  const auto start = Clock::now();
   bool input_open = !opts.no_input;
   std::string pending_input;
   while (!quit && !interrupted && !clock_done.load()) {
     const auto now = Clock::now();
-    if (!opts.no_audio && opts.duration > 0 && std::chrono::duration<double>(now - start).count() >= opts.duration) break;
+    if (audio && audio->done()) break;
     if (recorder && recorder->failed()) break;
     if (stream && stream->failed()) break;
-    if (now >= next_stats) { status(*source, engine, recorder.get(), stream.get(), radio_enabled, custom_score); next_stats = now + std::chrono::duration<float>(opts.stats_every); }
+    if (now >= next_stats) { status(*source, engine, recorder.get(), stream.get(), timing, audio.get(), radio_enabled, custom_score); next_stats = now + std::chrono::duration<float>(opts.stats_every); }
     if (now >= next_watch) { reload(); next_watch = now + std::chrono::milliseconds(250); }
     if (radio_enabled) {
       const auto score = engine.score_status();
@@ -280,14 +347,20 @@ int run(const Options& opts) {
   if (clock_thread.joinable()) { clock_thread.request_stop(); clock_thread.join(); }
   source->stop();
   if (recorder) recorder->finish();
-  status(*source, engine, recorder.get(), stream.get(), radio_enabled, custom_score);
+  status(*source, engine, recorder.get(), stream.get(), timing, audio.get(), radio_enabled, custom_score);
   if (recorder && recorder->failed()) throw std::runtime_error(recorder->error_after_finish());
   if (stream && stream->failed()) throw std::runtime_error("Live PCM pipe closed");
-  if (engine.underruns() || engine.invalid_samples() || (recorder && recorder->dropped())) {
-    std::cerr << "Stopped with audio gaps or recording errors; see the counters above.\n";
+  const auto a = audio ? audio->metrics() : music::AudioOutputMetrics{};
+  if (engine.underruns() || engine.invalid_samples() || (recorder && recorder->dropped()) || timing.misses() ||
+      a.active.timestamp_discontinuities || a.active.invalid_timestamps || a.active.callback_overruns ||
+      a.active.callback_errors || a.active.device_overloads) {
+    std::cerr << "Stopped with audio gaps, missed deadlines, device overloads, or recording errors; see the counters above.\n";
     return 2;
   }
-  std::cout << "Stopped cleanly.\n";
+  std::cout << "Playback stopped cleanly.\n";
+  if (a.warmup.timestamp_discontinuities || a.warmup.invalid_timestamps || a.warmup.callback_overruns ||
+      a.warmup.callback_errors || a.warmup.device_overloads)
+    std::cout << "Audio preparation reported errors before model playback; warmup and total counters are retained above.\n";
   return 0;
 }
 }  // namespace

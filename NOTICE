@@ -1,0 +1,13 @@
+AI Music
+Copyright 2026 AI Music contributors
+
+This project includes modifications to Magenta RealTime 2, Copyright 2026
+Google LLC, licensed under the Apache License, Version 2.0. Modifications are
+distributed as the clearly identified patches in patches/.
+
+The optional MLX CPU integration includes changes to MLX, Copyright 2023
+Apple Inc., licensed under the MIT License. Its license is retained in
+third_party/licenses/MLX.txt.
+
+Downloaded model weights and other third-party dependencies retain their
+own licenses. See THIRD_PARTY.md for sources and attribution.

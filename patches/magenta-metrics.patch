@@ -1,3 +1,7 @@
+AI Music modifications to Magenta RealTime 2 (Apache-2.0; Copyright 2026 Google LLC)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
 --- a/core/src/realtime_runner.cpp
 +++ b/core/src/realtime_runner.cpp
 @@ -364,10 +364,11 @@

@@ -1,0 +1,89 @@
+AI Music modifications to MLX v0.31.1 (MIT; see third_party/licenses/MLX.txt)
+Copyright 2026 AI Music contributors; modifications licensed under Apache-2.0.
+See NOTICE and THIRD_PARTY.md.
+
+diff --git a/mlx/export.cpp b/mlx/export.cpp
+--- a/mlx/export.cpp
++++ b/mlx/export.cpp
+@@ -233,7 +233,16 @@
+   auto stream_index = deserialize<int>(is);
+   auto device_type = deserialize<Device::DeviceType>(is);
+   auto device_index = deserialize<int>(is);
++#ifdef AI_MUSIC_CPU_IMPORT
++  // Execute the GPU-exported model on the CPU in this separate library.
++  // The normal Metal library retains its original stream assignments.
++  (void)stream_index;
++  (void)device_type;
++  (void)device_index;
++  return default_stream(Device::cpu);
++#else
+   return Stream(stream_index, Device(device_type, device_index));
++#endif
+ }
+ 
+ void serialize(Writer& os, const Dtype& t) {
+@@ -1031,6 +1040,16 @@
+       fun->tape, fun->inputs, fun->outputs, inputs, ftable->shapeless);
+ }
+ 
++#ifdef AI_MUSIC_CPU_IMPORT
++std::vector<array> import_cpu_primitive(
++    const std::vector<Shape>& shapes, const std::vector<Dtype>& types,
++    const std::shared_ptr<Primitive>& prim, const std::vector<array>& inputs,
++    std::map<std::vector<uint64_t>, array>& weight_cache);
++void rebuild_cpu_import_tape(const std::vector<array>& inputs,
++                             const std::vector<array>& outputs,
++                             std::vector<array>& tape);
++#endif
++
+ ImportedFunction import_function(const std::string& file) {
+   return ImportedFunction{file};
+ }
+@@ -1065,6 +1084,9 @@
+     tape.reserve(tape_size);
+ 
+     auto factory = PrimitiveFactory();
++#ifdef AI_MUSIC_CPU_IMPORT
++    std::map<std::vector<uint64_t>, array> cpu_weight_cache;
++#endif
+     for (size_t i = 0; i < tape_size; ++i) {
+       auto id = deserialize<uint64_t>(is);
+       if (deserialize<bool>(is)) {
+@@ -1076,6 +1098,19 @@
+         }
+         std::shared_ptr<Primitive> prim = factory.load(is);
+         auto num_siblings = deserialize<uint64_t>(is);
++#ifdef AI_MUSIC_CPU_IMPORT
++        auto ids = num_siblings == 0 ? std::vector<uint64_t>{id}
++                                    : deserialize<std::vector<uint64_t>>(is);
++        auto shapes = num_siblings == 0 ? std::vector<Shape>{deserialize<Shape>(is)}
++                                       : deserialize<std::vector<Shape>>(is);
++        auto types = num_siblings == 0 ? std::vector<Dtype>{deserialize<Dtype>(is)}
++                                      : deserialize<std::vector<Dtype>>(is);
++        auto arrays = import_cpu_primitive(shapes, types, prim, inputs, cpu_weight_cache);
++        for (size_t j = 0; j < arrays.size(); ++j) {
++          if (ids.at(j) == id) tape.push_back(arrays[j]);
++          array_map.emplace(ids.at(j), arrays[j]);
++        }
++#else
+         if (num_siblings == 0) {
+           auto shape = deserialize<Shape>(is);
+           auto type = deserialize<Dtype>(is);
+@@ -1099,6 +1134,7 @@
+             array_map.emplace(sid, arrays[i]);
+           }
+         }
++#endif
+       } else {
+         if (deserialize<bool>(is)) {
+           // Load constant
+@@ -1130,6 +1166,9 @@
+     for (auto id : trace_output_ids) {
+       trace_outputs.push_back(array_map.at(id));
+     }
++#ifdef AI_MUSIC_CPU_IMPORT
++    rebuild_cpu_import_tape(trace_inputs, trace_outputs, tape);
++#endif
+     ftable->insert(
+         std::move(kwarg_keys),
+         std::move(trace_inputs),

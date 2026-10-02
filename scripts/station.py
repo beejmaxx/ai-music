@@ -69,7 +69,7 @@ class Station:
     def read_log(self):
         for raw in self.process.stdout:
             line = raw.strip()
-            # Keep pane 2 readable; browser receives half-second telemetry.
+            # Keep the terminal readable; the browser receives half-second telemetry.
             if not line.startswith("[status]"):
                 print(line, flush=True)
             with self.lock:

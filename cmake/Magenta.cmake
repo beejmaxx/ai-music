@@ -16,23 +16,62 @@ FetchContent_MakeAvailable(magenta)
 
 # The pinned upstream encoder detaches a thread capturing model state. Own and
 # join it before teardown, and close the pending-prompt/idle handoff race.
-foreach(patch_name magenta-owned-prompt-worker magenta-metrics magenta-worker-qos magenta-stereo-read)
-  set(patch "${CMAKE_CURRENT_LIST_DIR}/../patches/${patch_name}.patch")
-  execute_process(COMMAND git apply --reverse --check "${patch}"
-    WORKING_DIRECTORY "${magenta_SOURCE_DIR}" RESULT_VARIABLE patch_present
-    OUTPUT_QUIET ERROR_QUIET)
-  if(NOT patch_present EQUAL 0)
-    execute_process(COMMAND git apply --check "${patch}"
-      WORKING_DIRECTORY "${magenta_SOURCE_DIR}" RESULT_VARIABLE patch_valid)
-    if(NOT patch_valid EQUAL 0)
-      message(FATAL_ERROR "Magenta source does not match the pinned ${patch_name} patch")
+set(magenta_patches)
+foreach(patch_name magenta-owned-prompt-worker magenta-metrics magenta-worker-qos magenta-stereo-read magenta-live-performance magenta-stereo-write magenta-prompt-log magenta-producer-trace magenta-buffer-capacity)
+  list(APPEND magenta_patches "${CMAKE_CURRENT_LIST_DIR}/../patches/${patch_name}.patch")
+endforeach()
+# Later patches extend earlier hunks. Reverse/apply sequentially on copies of
+# only the five patched files; git apply --check does not stage earlier changes.
+function(music_check_magenta_series reverse patches result)
+  set(stage "${magenta_BINARY_DIR}/patch-check")
+  foreach(file core/src/mlx_engine.cpp core/src/realtime_runner.cpp
+      core/include/magentart/mlx_engine.h core/include/magentart/realtime_runner.h
+      core/include/magentart/ring_buffer.h)
+    get_filename_component(directory "${stage}/${file}" DIRECTORY)
+    file(MAKE_DIRECTORY "${directory}")
+    file(COPY_FILE "${magenta_SOURCE_DIR}/${file}" "${stage}/${file}")
+  endforeach()
+  set(ordered_patches ${${patches}})
+  if(reverse)
+    list(REVERSE ordered_patches)
+    set(reverse_argument --reverse)
+  endif()
+  foreach(patch IN LISTS ordered_patches)
+    execute_process(COMMAND git "--git-dir=${magenta_SOURCE_DIR}/.git" "--work-tree=${stage}"
+        apply ${reverse_argument} "${patch}"
+      WORKING_DIRECTORY "${stage}" RESULT_VARIABLE failed OUTPUT_QUIET ERROR_VARIABLE error)
+    if(NOT failed EQUAL 0)
+      set(${result} FALSE PARENT_SCOPE)
+      set(${result}_error "${error}" PARENT_SCOPE)
+      return()
     endif()
+  endforeach()
+  set(${result} TRUE PARENT_SCOPE)
+endfunction()
+# Find the installed prefix so appending a new patch also upgrades an existing
+# dependency checkout. Validate the missing tail before changing any source.
+set(magenta_known_patches ${magenta_patches})
+set(magenta_missing_patches)
+while(magenta_known_patches)
+  music_check_magenta_series(TRUE magenta_known_patches patch_present)
+  if(patch_present)
+    break()
+  endif()
+  list(POP_BACK magenta_known_patches next_patch)
+  list(PREPEND magenta_missing_patches "${next_patch}")
+endwhile()
+if(magenta_missing_patches)
+  music_check_magenta_series(FALSE magenta_missing_patches patch_valid)
+  if(NOT patch_valid)
+    message(FATAL_ERROR "Magenta source does not match the pinned patch series: ${patch_valid_error}")
+  endif()
+  foreach(patch IN LISTS magenta_missing_patches)
     execute_process(COMMAND git apply "${patch}"
       WORKING_DIRECTORY "${magenta_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
-  endif()
-endforeach()
+  endforeach()
+endif()
 
-set(AI_MUSIC_MLX_ROOT "" CACHE PATH "Prebuilt MLX prefix (python -m mlx --cmake-dir)")
+set(AI_MUSIC_MLX_ROOT "" CACHE PATH "Prebuilt MLX prefix (site-packages/mlx)")
 if(AI_MUSIC_MLX_ROOT)
   find_package(MLX 0.31.1 EXACT CONFIG REQUIRED
     PATHS "${AI_MUSIC_MLX_ROOT}/share/cmake/MLX" NO_DEFAULT_PATH)
@@ -71,3 +110,4 @@ set(FETCHCONTENT_SOURCE_DIR_TENSORFLOW "${FETCHCONTENT_BASE_DIR}/tensorflow-lite
   CACHE PATH "TensorFlow source shared with TFLite" FORCE)
 FetchContent_MakeAvailable(tensorflow-lite)
 add_subdirectory("${magenta_SOURCE_DIR}/core" "${magenta_BINARY_DIR}/core" EXCLUDE_FROM_ALL)
+target_include_directories(magentart_core PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../include")
