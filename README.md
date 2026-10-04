@@ -252,6 +252,22 @@ cue times and a measurement report. It uses short edge fades and 1.25-second
 gaps. No compression or whole-mix gain changes are applied; it rejects a
 comparison if the resulting mixes differ by more than 0.3 LU.
 
+For a wordless vocal-like lead, the offline `vocal_study.py` prototype requires
+NumPy and the existing Side Street recording:
+
+```sh
+python3 scripts/vocal_study.py recordings/side-street-v2.wav recordings/side-street-vocal-study
+afplay recordings/side-street-vocal-study.wav
+```
+
+The 33-second preview starts with four bars of the existing groove, then adds a
+slower melody beneath the plucked hook. Additive harmonics follow moving ah/oh
+resonances, using the [Csound tenor formant tables](https://csound.com/docs/manual/MiscFormants.html)
+as a starting point, with breath noise and gentle pitch contours. Every sample
+of the added voice is synthesized; it contains no recorded singer. The script
+also saves the lead, backing and exact note/measurement data separately. The
+backing retains its existing mix, with short fades only at the excerpt edges.
+
 ### Second arranged track: Night Window
 
 `music-night-window` uses the same instrument palette for a new composition at
