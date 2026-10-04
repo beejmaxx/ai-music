@@ -268,6 +268,16 @@ of the added voice is synthesized; it contains no recorded singer. The script
 also saves the lead, backing and exact note/measurement data separately. The
 backing retains its existing mix, with short fades only at the excerpt edges.
 
+Add `--blend` for connected phrases: the voice holds through the internal notes,
+glides between pitches, and changes vowels more gently. A softer tone, 2 dB lower
+lead level and a short diffuse stereo room help it sit with the strings. This
+keeps the same melody and backing; use a fresh output prefix to preserve both takes:
+
+```sh
+python3 scripts/vocal_study.py recordings/side-street-v2.wav recordings/side-street-vocal-blend --blend
+afplay recordings/side-street-vocal-blend.wav
+```
+
 ### Second arranged track: Night Window
 
 `music-night-window` uses the same instrument palette for a new composition at

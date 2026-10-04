@@ -30,26 +30,20 @@ PHRASE = (
 )
 
 
-def syllable(midi, gate, velocity, vowel, seed):
-    release = .17
-    t = np.arange(round((gate + release) * RATE)) / RATE
+def vowel_source(frequency, mouth, fundamental, seed, soft=False):
+    """Keep the harmonic phase continuous through an entire vowel contour."""
+    t = np.arange(len(frequency)) / RATE
     rng = np.random.default_rng(seed)
-    fundamental = 440 * 2 ** ((midi - 69) / 12)
-    # Pitch approaches the note from slightly below; vibrato enters after attack.
-    vibrato = 13 * np.sin(2*np.pi*5.2*t) * np.clip((t-.18)/.24, 0, 1)
-    cents = -28*np.exp(-t/.055) + vibrato + 2*np.sin(2*np.pi*.9*t + seed % 7)
-    frequency = fundamental * np.exp2(cents / 1200)
     phase = 2*np.pi*np.cumsum(frequency) / RATE
-    mouth = .18 + (vowel - .18) * (1 - np.exp(-t/.085))
     centers = OH[0,:,None] + (AH[0]-OH[0])[:,None] * mouth
     widths = OH[2,:,None] + (AH[2]-OH[2])[:,None] * mouth
     levels = np.power(10, (OH[1,:,None] + (AH[1]-OH[1])[:,None] * mouth) / 20)
     voiced, power = np.zeros_like(t), np.zeros_like(t)
     for harmonic in range(1, int(6200 / fundamental) + 1):
         hz = harmonic * frequency
-        distance = (hz[None,:] - centers) / (widths * .65)
+        distance = (hz[None,:] - centers) / (widths * (.85 if soft else .65))
         weight = .035 / harmonic**1.2 + np.sum(levels / (1 + distance**2), axis=0)
-        weight *= 1 / np.sqrt(1 + (hz/4400)**8)
+        weight *= 1 / np.sqrt(1 + (hz/(3500 if soft else 4400))**8)
         voiced += weight * np.sin(harmonic * phase)
         power += .5 * weight**2
     voiced /= np.sqrt(np.maximum(power, 1e-12))
@@ -59,11 +53,78 @@ def syllable(midi, gate, velocity, vowel, seed):
     breath_shape = (1-np.exp(-(bins/650)**2)) * np.exp(-.5*((bins-1700)/1500)**2)
     breath = np.fft.irfft(np.fft.rfft(rng.normal(size=len(t))) * breath_shape, n=len(t))
     breath /= max(float(np.sqrt(np.mean(breath**2))), 1e-12)
+    return voiced, breath
+
+
+def syllable(midi, gate, velocity, vowel, seed):
+    release = .17
+    t = np.arange(round((gate + release) * RATE)) / RATE
+    fundamental = 440 * 2 ** ((midi - 69) / 12)
+    # Pitch approaches the note from slightly below; vibrato enters after attack.
+    vibrato = 13 * np.sin(2*np.pi*5.2*t) * np.clip((t-.18)/.24, 0, 1)
+    cents = -28*np.exp(-t/.055) + vibrato + 2*np.sin(2*np.pi*.9*t + seed % 7)
+    frequency = fundamental * np.exp2(cents / 1200)
+    mouth = .18 + (vowel - .18) * (1 - np.exp(-t/.085))
+    voiced, breath = vowel_source(frequency, mouth, fundamental, seed)
     attack = .060 if gate > .5 else .045
     envelope = .5 - .5*np.cos(np.pi * np.clip(t/attack, 0, 1))
     envelope *= .90 + .10*np.exp(-t/.20)
     envelope *= .5 + .5*np.cos(np.pi * np.clip((t-gate)/release, 0, 1))
     return velocity * envelope * (voiced + .035*breath*(.6 + .4*np.exp(-t/.12)))
+
+
+def smooth_targets(t, times, values, transition):
+    """Join successive targets without jumps in value or slope."""
+    contour = np.full_like(t, values[0])
+    for onset, previous, target in zip(times[1:], values[:-1], values[1:]):
+        progress = np.clip((t-onset)/transition, 0, 1)
+        contour += (target-previous) * (.5-.5*np.cos(np.pi*progress))
+    return contour
+
+
+def connected_phrase(notes, seed):
+    # One breath and oscillator per bar; the tongue and pitch move within it.
+    times = [(note[0]-notes[0][0])*STEP for note in notes]
+    gate = times[-1] + notes[-1][2]*STEP
+    release = .24
+    t = np.arange(round((gate+release)*RATE)) / RATE
+    midi = smooth_targets(t, times, [note[1] for note in notes], .11)
+    velocity = smooth_targets(t, times, [note[3] for note in notes], .12)
+    vowels = [.35+.50*note[4] for note in notes]
+    mouth = smooth_targets(t, times, vowels, .16)
+    mouth -= .06*np.exp(-t/.10)
+    vibrato = 9*np.sin(2*np.pi*5.2*t) * np.clip((t-.24)/.30, 0, 1)
+    cents = -14*np.exp(-t/.07) + vibrato + 2*np.sin(2*np.pi*.9*t + seed % 7)
+    frequency = 440*np.exp2((midi-69)/12 + cents/1200)
+    fundamental = 440*2**((min(note[1] for note in notes)-69)/12)
+    voiced, breath = vowel_source(frequency, mouth, fundamental, seed, soft=True)
+    envelope = .5-.5*np.cos(np.pi*np.clip(t/.09, 0, 1))
+    envelope *= .5+.5*np.cos(np.pi*np.clip((t-gate)/release, 0, 1))
+    return velocity * envelope * (voiced + .025*breath)
+
+
+def short_room(dry):
+    """A quiet diffuse stereo tail, generated from noise rather than samples."""
+    t = np.arange(round(.50*RATE)) / RATE
+    bins = np.fft.rfftfreq(len(t), 1/RATE)
+    color = (1-np.exp(-(bins/300)**2)) / np.sqrt(1+(bins/3400)**8)
+    elapsed = np.maximum(t-.024, 0)
+    envelope = np.exp(-np.log(1000)*elapsed/.46)
+    envelope *= .5-.5*np.cos(np.pi*np.clip((t-.024)/.009, 0, 1))
+    envelope *= np.clip((.50-t)/.015, 0, 1)
+    size = 1 << (len(dry)+len(t)-2).bit_length()
+    spectrum = np.fft.rfft(dry, n=size)
+    lead = np.column_stack((dry,dry))
+    for channel in range(2):
+        rng = np.random.default_rng(20261004+channel)
+        impulse = np.fft.irfft(np.fft.rfft(rng.normal(size=len(t))) * color, n=len(t)) * envelope
+        impulse /= np.sqrt(np.sum(impulse**2))
+        wet = np.fft.irfft(spectrum*np.fft.rfft(impulse, n=size), n=size)[:len(dry)]
+        wet *= .22*np.sqrt(np.sum(dry**2)/max(float(np.sum(wet**2)), 1e-12))
+        lead[:,channel] += wet
+    # FFT roundoff must not add a signal before the dry phrase begins.
+    lead[:np.flatnonzero(dry)[0]] = 0
+    return lead
 
 
 def write_wav(path, samples):
@@ -79,6 +140,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('backing', type=Path, help='Full Side Street v1 or v2 PCM16 WAV')
     parser.add_argument('output', type=Path, help='New prefix for mix, vocal-like lead, backing and notes')
+    parser.add_argument('--blend', action='store_true', help='Join notes into phrases with smoother vowels, a softer tone and a short room')
     args = parser.parse_args()
     paths = [Path(str(args.output) + suffix) for suffix in ('.wav','-lead.wav','-backing.wav','.json','-notes.txt')]
     for path in paths:
@@ -95,19 +157,33 @@ def main():
     events = []
     # Four bars establish the familiar groove before the new lead joins it.
     for bar in range(4,16):
-        for step,midi,length,velocity,vowel in PHRASE[bar % 4]:
+        notes = PHRASE[bar % 4]
+        if args.blend:
+            start = round(((16+bar)*16 + notes[0][0])*STEP*RATE) - START
+            phrase = connected_phrase(notes, 20261004+bar*16+notes[0][0])
+            count = min(len(phrase),len(dry)-start)
+            dry[start:start+count] += phrase[:count]
+        for index,(step,midi,length,velocity,vowel) in enumerate(notes):
             start = round(((16+bar)*16 + step)*STEP*RATE) - START
-            note = syllable(midi, length*STEP, velocity, vowel, 20261004 + bar*16 + step)
-            count = min(len(note),len(dry)-start)
-            dry[start:start+count] += note[:count]
+            if args.blend:
+                if index+1 < len(notes):
+                    length = notes[index+1][0]-step
+                vowel = .35+.50*vowel
+            else:
+                note = syllable(midi, length*STEP, velocity, vowel, 20261004 + bar*16 + step)
+                count = min(len(note),len(dry)-start)
+                dry[start:start+count] += note[:count]
             events.append({'seconds':start/RATE,'midi':midi,'gate_seconds':length*STEP,'velocity':velocity,'vowel':vowel})
-    lead = np.column_stack((dry,dry))
-    # Quiet asymmetric reflections keep the new line in the existing stereo space.
-    for seconds,gain,channel in ((.043,.06,0),(.067,.055,1),(.75*60/BPM,.15,0),(1.5*60/BPM,.10,1),(2.25*60/BPM,.045,0)):
-        delay = round(seconds*RATE)
-        lead[delay:,channel] += gain * dry[:-delay]
+    if args.blend:
+        lead = short_room(dry)
+    else:
+        lead = np.column_stack((dry,dry))
+        # Quiet asymmetric reflections keep the new line in the existing stereo space.
+        for seconds,gain,channel in ((.043,.06,0),(.067,.055,1),(.75*60/BPM,.15,0),(1.5*60/BPM,.10,1),(2.25*60/BPM,.045,0)):
+            delay = round(seconds*RATE)
+            lead[delay:,channel] += gain * dry[:-delay]
     active = round(4*16*STEP*RATE)
-    scale = 10**(-28/20) / np.sqrt(np.mean(lead[active:]**2))
+    scale = 10**((-30 if args.blend else -28)/20) / np.sqrt(np.mean(lead[active:]**2))
     lead *= scale
     # The existing backing is unchanged except for short fades at excerpt edges.
     fade = np.ones(len(backing))
@@ -128,12 +204,18 @@ def main():
         'formant_reference':'https://csound.com/docs/manual/MiscFormants.html',
         'events':events,'sha256':{path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in paths[:3]},
     }
+    if args.blend:
+        report['articulation'] = {'mode':'connected phrases','pitch_glide_seconds':.11,'vowel_transition_seconds':.16,
+                                  'attack_seconds':.09,'release_seconds':.24,'room_wet_rms_relative_to_dry':.22,
+                                  'room_decay_to_minus_60_db_seconds':.46,'target_lead_active_rms_dbfs':-30}
     with paths[3].open('x') as out:
         out.write(json.dumps(report,indent=2)+'\n')
     with paths[4].open('x') as out:
         out.write('Side Street — wordless vocal-like lead study\n116 BPM / F minor\n\n')
         out.write(f"0.00s  Existing groove and string-like pluck\n{events[0]['seconds']:.2f}s  Synthesized ah/oh lead enters\n")
         out.write('The voice uses additive harmonics, moving vowel resonances, breath noise and gentle pitch contours.\n')
+        if args.blend:
+            out.write('Blend take: connected phrases, 110 ms pitch glides, narrower vowel changes, a softer/quieter lead and a diffuse short room.\n')
     print(f"Wrote {paths[0]}: {len(mix)/RATE:.2f}s; voice enters {events[0]['seconds']:.2f}s; peak {report['mix_peak_dbfs']:.2f} dBFS")
 
 
