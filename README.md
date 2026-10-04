@@ -278,6 +278,20 @@ python3 scripts/vocal_study.py recordings/side-street-v2.wav recordings/side-str
 afplay recordings/side-street-vocal-blend.wav
 ```
 
+For a short electric-piano answer to the strings, use the offline NumPy/ffmpeg
+prototype below. It plays the same four bars twice: A is the existing groove;
+B adds a sparse C–E-flat–F motif with a mellow synthesized body and a brief
+metallic attack. The comparison lasts about 18 seconds, with B starting at
+9.53 seconds and the first piano note at 11.34 seconds. Both excerpts use the
+same backing and edge fades; only the added piano is trimmed if needed to keep
+the measured mix loudness within 0.3 LU. Separate clips, the piano stem, cue
+times and measurements are saved alongside the sequence.
+
+```sh
+python3 scripts/piano_study.py recordings/side-street-v2.wav recordings/side-street-piano-study
+afplay recordings/side-street-piano-study.wav
+```
+
 ### Second arranged track: Night Window
 
 `music-night-window` uses the same instrument palette for a new composition at
