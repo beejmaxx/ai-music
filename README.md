@@ -133,6 +133,91 @@ streaming and per-listener stations are future work; the current priority is
 this listener's local sound. The current programs have a
 finite musical vocabulary and does not yet provide album-quality composition.
 
+## Develop individual instruments
+
+### Bass
+
+`music-sound` renders the standalone bass instrument without drums, a score or
+the neural model. Start with a single note and change one patch control:
+
+```sh
+cmake --build build --target music-sound --parallel 2
+./build/music-sound bass sounds/bass/round.voice recordings/bass-round.wav --note 41 --gate 1
+afplay recordings/bass-round.wav
+```
+
+Patch files expose saw/pulse/sine oscillators, pulse width, a sine sub oscillator,
+filter cutoff and resonance (Q), a decaying filter envelope, amplitude ADSR,
+pre-filter drive, glide and output level. Times are milliseconds; `filter-amount`
+is octaves and `drive` is dB. `--gate` is the note length in seconds; `--velocity`
+sets its intensity. The renderer includes the release tail and protects existing
+recordings from overwrite. The voice processes drive/filter saturation at four
+times the output rate and low-pass filters before downsampling.
+
+`open.voice` changes only the cutoff; `driven.voice` changes only the drive.
+These are component studies, with no claim of an approved musical sound.
+The existing station retains its original bass voice while this instrument is
+developed independently. `music::BassVoice` exposes `note_on`, `note_off`,
+`patch` and an allocation-free `render` for later sequencer integration.
+
+### Kick
+
+The standalone kick separates the tuned body, falling pitch, amplitude decay,
+noise click and drive. Render several strikes with enough space to hear each tail:
+
+```sh
+./build/music-sound kick sounds/kick/round.voice recordings/kick-round.wav --hits 6 --spacing .9
+afplay recordings/kick-round.wav
+```
+
+`pitch` is the final frequency in Hz; `sweep` is the initial pitch rise in
+semitones. `pitch-decay`, `decay` and `click-decay` are the milliseconds taken
+for their envelopes to fall by 60 dB; `attack` is the amplitude rise time in ms.
+`click` sets transient level, `drive` is dB, and `level` is output gain.
+`--velocity` sets strike intensity; `--spacing` is seconds between strikes.
+The final tail is included automatically. `tight.voice` changes only the body
+decay; `click.voice` changes only the transient amount. Both instruments share
+the four-times-rate output filter and DC blocker. The kick supports rapid
+retriggers and has no sequencer or model dependency.
+
+### Bass and kick together
+
+The first component study is a sixteen-bar, 116 BPM bass-and-kick groove.
+Its four-bar phrase, note lengths, velocities and instrument settings are in
+`examples/kick-bass-study.cpp`. The bass sits mostly between kick attacks, with
+a short release and mild ducking where notes overlap. Render it and both parts:
+
+```sh
+cmake --build build --target music-groove --parallel 2
+./build/music-groove recordings/kick-bass-study
+afplay recordings/kick-bass-study.wav
+```
+
+The renderer also writes `kick-bass-study-bass.wav` and
+`kick-bass-study-kick.wav`. These parts include the study's gain and ducking and
+sum back to the mix within PCM16 rounding. Existing outputs are protected.
+
+### First arranged track: Side Street
+
+`music-track` develops the study into a 64-bar instrumental at 116 BPM, about
+2:14 including its tail. A short plucked hook, hats and a backbeat join the
+bass/kick foundation, with an introduction, breakdown, rebuild, return and outro.
+The hook uses the same oscillator/filter voice in a higher register; percussion
+comes from the existing synth kit. This track is composed and synthesized in C++.
+
+```sh
+cmake --build build --target music-track --parallel 2
+./build/music-track recordings/side-street-v1
+afplay recordings/side-street-v1.wav
+```
+
+The same render writes separate `-bass.wav`, `-kick.wav`, `-percussion.wav` and
+`-hook.wav` parts, plus `-sections.txt` with cue times. The parts include their mix
+gains and effects and sum to the mix within PCM16 rounding. The notes and
+arrangement are in `examples/first-track.cpp`; the original two-instrument study
+remains available separately. These are working compositions for listening and
+sound development.
+
 ## Play and mix house/trance live
 
 ```sh

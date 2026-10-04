@@ -1,0 +1,10 @@
+# Same as round.voice, with a stronger transient: .12 -> .7.
+pitch 52
+sweep 24
+pitch-decay 55
+attack .5
+decay 380
+click .7
+click-decay 12
+drive 3
+level .65

@@ -1,0 +1,15 @@
+# Starting component patch. Times in ms; filter amount in octaves; resonance = Q.
+oscillator saw
+pulse-width .5
+sub .2
+cutoff 180
+resonance .8
+filter-amount 3
+filter-decay 240
+attack 3
+decay 240
+sustain .65
+release 100
+drive 3
+glide 0
+level .55
