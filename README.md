@@ -218,6 +218,23 @@ arrangement are in `examples/first-track.cpp`; the original two-instrument study
 remains available separately. These are working compositions for listening and
 sound development.
 
+### Second arranged track: Night Window
+
+`music-night-window` uses the same instrument palette for a new composition at
+118 BPM in G minor, about 2:13 long. The bass moves through G, G, E-flat and F;
+a falling plucked motif develops into a higher answer. A short bass feature,
+breakdown and return create contrast without adding instruments.
+
+```sh
+cmake --build build --target music-night-window --parallel 2
+./build/music-night-window recordings/night-window-v1
+afplay recordings/night-window-v1.wav
+```
+
+The notes and arrangement are in `examples/night-window.cpp`. The renderer
+writes a mix, the same four stems and a section cue sheet, and protects existing
+outputs. Side Street remains reproducible with its original renderer.
+
 ## Play and mix house/trance live
 
 ```sh

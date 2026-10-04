@@ -52,6 +52,10 @@ add_executable(music-track examples/first-track.cpp)
 target_link_libraries(music-track PRIVATE music_voices music_core)
 target_compile_options(music-track PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(music-night-window examples/night-window.cpp)
+target_link_libraries(music-night-window PRIVATE music_voices music_core)
+target_compile_options(music-night-window PRIVATE -Wall -Wextra -Wpedantic)
+
 if(AI_MUSIC_MAGENTA)
   include(cmake/Magenta.cmake)
   if(BUILD_TESTING)
