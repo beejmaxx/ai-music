@@ -292,6 +292,29 @@ python3 scripts/piano_study.py recordings/side-street-v2.wav recordings/side-str
 afplay recordings/side-street-piano-study.wav
 ```
 
+To compare the loose piano rhythm with a firmer landing, then hear both in a
+short arrangement, use the same source recording and the saved piano-study
+prefix. The final F moves onto beat three with its entire waveform intact.
+The 52-second audition plays loose timing, settled timing, then a 33-second
+passage with questions, answers and a two-bar space for the strings. It also
+exports each comparison clip, the developed mix and its piano/backing stems.
+
+```sh
+python3 scripts/piano_phrasing.py recordings/side-street-v2.wav recordings/side-street-piano-study recordings/side-street-piano-phrasing
+afplay recordings/side-street-piano-phrasing.wav
+```
+
+With `--full-track`, the same tool adds those piano phrases across the full
+recording. They enter after the strings are established, leave space around
+the breakdown and first return, then thin out in the outro. The source mix is
+preserved underneath the added piano; the mix, piano and backing are exported
+separately with phrase timings and loudness measurements.
+
+```sh
+python3 scripts/piano_phrasing.py recordings/side-street-v2.wav recordings/side-street-piano-study recordings/side-street-v3 --full-track
+afplay recordings/side-street-v3.wav
+```
+
 ### Second arranged track: Night Window
 
 `music-night-window` uses the same instrument palette for a new composition at
