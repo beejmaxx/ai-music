@@ -30,8 +30,17 @@ const std::array<std::vector<Note>, 4> hook_phrase{{
   {{3,65,1.4,.82}, {6,68,.8,.66}, {11,72,2.1,.84}},
   {{2,68,.8,.70}, {5,65,1.2,.78}, {11,63,1.5,.62}, {14,65,.9,.80}},
 }};
+// A small phrasing experiment: repeat the high note, then answer on beat four.
+// The default phrase above remains the approved Side Street composition.
+const std::array<std::vector<Note>, 4> hook_variation{{
+  {{3,65,.75,.84}, {6,68,.65,.68}, {10,72,.65,.72}, {12,72,2.1,.82}},
+  {{2,70,.85,.70}, {5,68,.65,.62}, {9,65,2.7,.82}, {14,63,.6,.54}},
+  {{3,65,.75,.82}, {6,68,.65,.66}, {10,72,.65,.72}, {12,72,2.1,.84}},
+  {{2,68,.8,.70}, {5,65,1.2,.78}, {10,63,.65,.62}, {12,65,2.1,.80}},
+}};
+enum class HookVersion { original, melody, expression };
 enum class Kind { bass_off, hook_off, section, kick, bass, hook };
-struct Event { std::uint64_t frame; Kind kind; unsigned note; double velocity; };
+struct Event { std::uint64_t frame; Kind kind; unsigned note; double velocity, length = 0; };
 std::uint64_t frame_at(double seconds) { return std::uint64_t(std::llround(seconds * music::sample_rate)); }
 struct Section { unsigned bar; const char* name; };
 constexpr Section sections[] = {
@@ -43,11 +52,16 @@ constexpr Section sections[] = {
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 2) {
-      std::cerr << "Usage: music-track OUTPUT_PREFIX (mix, four stems, and section timings)\n";
+    if (argc != 2 && (argc != 4 || std::string(argv[2]) != "--hook")) {
+      std::cerr << "Usage: music-track OUTPUT_PREFIX [--hook original|melody|expression]\n"
+                   "Writes a mix, four stems, and section timings.\n";
       return 1;
     }
     const std::string prefix = argv[1];
+    const std::string hook_name = argc == 4 ? argv[3] : "original";
+    const auto hook_version = hook_name == "original" ? HookVersion::original
+      : hook_name == "melody" ? HookVersion::melody : hook_name == "expression" ? HookVersion::expression
+      : throw std::runtime_error("Hook must be original, melody, or expression");
     constexpr const char* suffixes[] = {".wav", "-bass.wav", "-kick.wav", "-percussion.wav", "-hook.wav"};
     for (const auto suffix : suffixes)
       if (std::filesystem::exists(prefix + suffix)) throw std::runtime_error("Output already exists: " + prefix + suffix);
@@ -84,7 +98,7 @@ int main(int argc, char** argv) {
     std::vector<Event> events;
     const auto add_note = [&](unsigned bar, const Note& note, bool lead, double velocity_scale = 1.) {
       const auto onset = (bar * 16 + note.step + (note.step % 2 ? (lead ? .07 : .12) : 0)) * step_seconds;
-      events.push_back({frame_at(onset), lead ? Kind::hook : Kind::bass, note.midi, note.velocity * velocity_scale});
+      events.push_back({frame_at(onset), lead ? Kind::hook : Kind::bass, note.midi, note.velocity * velocity_scale, note.length});
       events.push_back({frame_at(onset + note.length * step_seconds), lead ? Kind::hook_off : Kind::bass_off, 0, 0});
     };
     for (unsigned bar = 0; bar <= bars; ++bar) {
@@ -111,7 +125,7 @@ int main(int argc, char** argv) {
         }
       }
       if (bar < 8 || bar >= 60) continue;
-      for (auto note : hook_phrase[bar % 4]) {
+      for (auto note : (hook_version == HookVersion::melody ? hook_variation : hook_phrase)[bar % 4]) {
         if (bar >= 32 && bar < 40) {
           if (note.step < 9) continue;
           note.length *= 1.5;
@@ -157,7 +171,24 @@ int main(int argc, char** argv) {
           case Kind::bass_off: bass.note_off(); break;
           case Kind::hook_off: hook.note_off(); break;
           case Kind::bass: bass.note_on(event.note, event.velocity); break;
-          case Kind::hook: hook.note_on(event.note, event.velocity); break;
+          case Kind::hook:
+            if (hook_version == HookVersion::expression) {
+              auto expressive = hook_patch;
+              const auto accent = std::clamp((event.velocity - .54) / .30, 0., 1.);
+              const bool held = event.length >= 1.4;
+              expressive.cutoff = 600 + 650 * accent;
+              expressive.filter_amount = 1.5 + accent;
+              expressive.filter_decay_ms = held ? 420 : 180;
+              expressive.resonance = .85;
+              expressive.attack_ms = held ? 8 : 3;
+              expressive.decay_ms = held ? 850 : 400;
+              expressive.sustain = held ? .20 : .12;
+              expressive.release_ms = held ? 250 : 110;
+              expressive.drive_db = 2.5;
+              hook.patch(expressive);
+            }
+            hook.note_on(event.note, event.velocity);
+            break;
         }
       }
       auto count = std::min<std::uint64_t>(music::block_size, total - frame);
@@ -196,6 +227,7 @@ int main(int argc, char** argv) {
     std::ofstream notes(prefix + "-sections.txt");
     if (!notes) throw std::runtime_error("Could not write section timings");
     notes << "Side Street — first arrangement\n116 BPM / F minor / 64 bars\n\n" << std::fixed << std::setprecision(2);
+    if (hook_version != HookVersion::original) notes << "Hook experiment: " << hook_name << "\n\n";
     for (const auto& cue : sections) notes << cue.bar * 16 * step_seconds << "s  bar " << cue.bar + 1 << "  " << cue.name << '\n';
     notes << "\nStems include mix gain, ducking and hook echo; sum them at unity.\n";
     notes.close();

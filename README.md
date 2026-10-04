@@ -218,6 +218,26 @@ arrangement are in `examples/first-track.cpp`; the original two-instrument study
 remains available separately. These are working compositions for listening and
 sound development.
 
+Side Street also supports two hook experiments. The default render preserves
+the original track; `--hook melody` changes the hook's phrasing, and
+`--hook expression` keeps its notes and timing while changing the articulation
+and filter response for each note.
+
+```sh
+./build/music-track recordings/hook-original
+./build/music-track recordings/hook-melody --hook melody
+./build/music-track recordings/hook-expression --hook expression
+python3 scripts/compare_hooks.py recordings/hook-original recordings/hook-melody recordings/hook-expression recordings/hook-comparison
+afplay recordings/hook-comparison.wav
+```
+
+The comparison helper requires Python 3.11+ and `ffmpeg`. It checks that the
+three accompaniment stems are identical, matches the hooks' integrated
+loudness, and exports bars 17–24 as A/B/C clips and a 52-second sequence with
+cue times and a measurement report. It uses short edge fades and 1.25-second
+gaps. No compression or whole-mix gain changes are applied; it rejects a
+comparison if the resulting mixes differ by more than 0.3 LU.
+
 ### Second arranged track: Night Window
 
 `music-night-window` uses the same instrument palette for a new composition at
