@@ -19,7 +19,15 @@ with tempfile.TemporaryDirectory(prefix="ai-music-controls-") as directory:
     control = root / "live.commands"
     recording = root / "take.wav"
     log = root / "session.log"
-    control.write_text("style ambient\nvolume .25\n")
+
+    def save_controls(text):
+        # Publish a complete save: the watcher must not see the empty file
+        # between write_text's truncation and its buffered write.
+        pending = control.with_suffix(".pending")
+        pending.write_text(text)
+        pending.replace(control)
+
+    save_controls("style ambient\nvolume .25\n")
     with log.open("w") as output:
         process = subprocess.Popen([
             str(args.binary.resolve()), "--no-audio", "--no-input", "--duration", "5",
@@ -33,12 +41,12 @@ with tempfile.TemporaryDirectory(prefix="ai-music-controls-") as directory:
                     raise RuntimeError(log.read_text())
                 time.sleep(.05)
             time.sleep(.6)
-            control.write_text("style pulse\nvolume .35\ntempo 118\ndrums on\n")
+            save_controls("style pulse\nvolume .35\ntempo 118\ndrums on\n")
             time.sleep(.9)
             # Validation must reject the whole file, including volume 0.
-            control.write_text("volume 0\ntempo nan\n")
+            save_controls("volume 0\ntempo nan\n")
             time.sleep(.9)
-            control.write_text("style ambient\nvolume .20\ndrums off\n")
+            save_controls("style ambient\nvolume .20\ndrums off\n")
             process.wait(timeout=10)
         finally:
             if process.poll() is None:
