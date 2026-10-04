@@ -38,6 +38,29 @@ const std::array<std::vector<Note>, 4> hook_variation{{
   {{3,65,.75,.82}, {6,68,.65,.66}, {10,72,.65,.72}, {12,72,2.1,.84}},
   {{2,68,.8,.70}, {5,65,1.2,.78}, {10,63,.65,.62}, {12,65,2.1,.80}},
 }};
+const std::array<std::vector<Note>, 4> breakdown_bass{{
+  {{2,41,2.0,.80}, {10,41,1.3,.72}, {14,39,.75,.63}},
+  {{2,41,2.2,.77}, {9,44,.8,.62}, {12,41,1.5,.75}},
+  {{2,41,2.0,.80}, {10,48,1.25,.73}, {14,44,.75,.61}},
+  {{2,41,2.0,.76}, {9,39,1.25,.66}, {14,40,.6,.62}},
+}};
+const std::array<std::vector<Note>, 4> breakdown_hook{{
+  {{11,72,1.2,.68}},
+  {},
+  {{5,68,.9,.58}, {11,65,1.6,.70}},
+  {{9,63,1.2,.61}, {14,65,.75,.66}},
+}};
+const std::array<std::vector<Note>, 4> rebuild_hook{{
+  {{9,65,1.5,.67}, {14,68,.75,.63}},
+  {{6,68,.8,.65}, {10,70,1.3,.70}, {14,72,.9,.76}},
+  {{3,68,1.0,.72}, {7,70,.75,.64}, {11,72,1.1,.79}, {14,75,.75,.75}},
+  {{2,72,1.3,.78}, {7,70,.75,.70}, {10,67,.8,.64}},
+}};
+// Two familiar bars lead into this higher answer at the full return.
+const std::array<std::vector<Note>, 2> return_answer{{
+  {{3,68,1.1,.80}, {6,72,.75,.70}, {10,75,1.35,.84}, {14,72,.75,.67}},
+  {{2,70,.95,.73}, {5,68,.9,.65}, {9,67,1.25,.64}, {12,65,2.1,.84}},
+}};
 enum class HookVersion { original, melody, expression };
 enum class Kind { bass_off, hook_off, section, kick, bass, hook };
 struct Event { std::uint64_t frame; Kind kind; unsigned note; double velocity, length = 0; };
@@ -52,16 +75,29 @@ constexpr Section sections[] = {
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 2 && (argc != 4 || std::string(argv[2]) != "--hook")) {
+    if (argc < 2 || argc > 6 || argc % 2 != 0) {
       std::cerr << "Usage: music-track OUTPUT_PREFIX [--hook original|melody|expression]\n"
+                   "                   [--arrangement original|v2]\n"
                    "Writes a mix, four stems, and section timings.\n";
       return 1;
     }
     const std::string prefix = argv[1];
-    const std::string hook_name = argc == 4 ? argv[3] : "original";
+    std::string hook_name = "original", arrangement_name = "original";
+    bool have_hook = false, have_arrangement = false;
+    for (int argument = 2; argument < argc; argument += 2) {
+      const std::string option = argv[argument];
+      if (option == "--hook" && !have_hook) {
+        hook_name = argv[argument + 1]; have_hook = true;
+      } else if (option == "--arrangement" && !have_arrangement) {
+        arrangement_name = argv[argument + 1]; have_arrangement = true;
+      } else throw std::runtime_error("Unknown or duplicate option: " + option);
+    }
     const auto hook_version = hook_name == "original" ? HookVersion::original
       : hook_name == "melody" ? HookVersion::melody : hook_name == "expression" ? HookVersion::expression
       : throw std::runtime_error("Hook must be original, melody, or expression");
+    if (arrangement_name != "original" && arrangement_name != "v2")
+      throw std::runtime_error("Arrangement must be original or v2");
+    const bool revised = arrangement_name == "v2";
     constexpr const char* suffixes[] = {".wav", "-bass.wav", "-kick.wav", "-percussion.wav", "-hook.wav"};
     for (const auto suffix : suffixes)
       if (std::filesystem::exists(prefix + suffix)) throw std::runtime_error("Output already exists: " + prefix + suffix);
@@ -117,14 +153,27 @@ int main(int argc, char** argv) {
         continue;
       }
       if (bar >= 32 && bar < 36) {
-        if (bar % 2 == 0) add_note(bar, {2,41,3.5,.65}, false);
+        if (revised) {
+          for (const auto& note : breakdown_bass[bar % 4]) add_note(bar, note, false);
+        } else if (bar % 2 == 0) add_note(bar, {2,41,3.5,.65}, false);
       } else {
-        for (const auto& note : bass_phrase[bar % 4]) {
+        for (auto note : bass_phrase[bar % 4]) {
           if (bar >= 60 && note.step > 10) continue;
+          if (revised && bar == 39 && note.step >= 12) continue;
+          if (revised && bar == 40 && note.step == 2) { note.step = 0; note.length = 1.6; }
           add_note(bar, note, false, bar >= 36 && bar < 40 ? .8 : 1.);
         }
       }
       if (bar < 8 || bar >= 60) continue;
+      if (revised && bar >= 32 && bar < 40) {
+        const auto& phrase = bar < 36 ? breakdown_hook : rebuild_hook;
+        for (const auto& note : phrase[bar % 4]) add_note(bar, note, true);
+        continue;
+      }
+      if (revised && bar >= 40 && bar < 48 && bar % 4 >= 2) {
+        for (const auto& note : return_answer[bar % 4 - 2]) add_note(bar, note, true);
+        continue;
+      }
       for (auto note : (hook_version == HookVersion::melody ? hook_variation : hook_phrase)[bar % 4]) {
         if (bar >= 32 && bar < 40) {
           if (note.step < 9) continue;
@@ -147,20 +196,34 @@ int main(int argc, char** argv) {
     std::array<float, music::block_size> kit_l{}, kit_r{}, unused_l{}, unused_r{};
     const auto song_end = frame_at(bars * 16 * step_seconds);
     const auto total = song_end + 2 * music::sample_rate;
+    const auto pause_start = frame_at((40 * 16 - 2) * step_seconds);
+    const auto return_start = frame_at(40 * 16 * step_seconds);
+    const auto pause_fade_out = frame_at(.012), pause_fade_in = frame_at(.002);
     std::size_t next = 0;
     double kick_age = 10, peak = 0, percussion_gain = 0, target_percussion = 0;
     auto section = [&](unsigned bar) {
       bass_patch.cutoff = bar >= 32 && bar < 36 ? 130 : bar >= 36 && bar < 40 ? 180 + 25 * (bar - 36)
         : bar >= 24 && bar < 32 ? 300 : bar >= 40 && bar < 56 ? 280 : 240;
+      if (revised && bar >= 32 && bar < 40)
+        bass_patch.cutoff = bar < 36 ? 150 : 140 + 35 * (bar - 36);
       bass.patch(bass_patch);
       const bool sparse = bar >= 32 && bar < 36;
       const bool tail = bar >= 63;
-      const float hats = tail ? 0 : sparse ? .065f : bar < 8 ? .16f : bar >= 60 ? .12f : .23f;
-      const float clap = tail || sparse || bar < 8 ? 0 : bar >= 36 && bar < 40 ? .14f : .29f;
+      float hats = tail ? 0 : sparse ? .065f : bar < 8 ? .16f : bar >= 60 ? .12f : .23f;
+      float clap = tail || sparse || bar < 8 ? 0 : bar >= 36 && bar < 40 ? .14f : .29f;
+      if (revised && bar >= 32 && bar < 40) {
+        hats = bar < 36 ? 0 : .08f + .035f * (bar - 36);
+        clap = bar < 38 ? 0 : .12f + .04f * (bar - 38);
+      }
       kit->mix("hats", hats); kit->mix("clap", clap);
-      kit->synth_control({music::Parameter::rhythm, bar == 39 || bar == 55 ? 1.f : 0.f});
+      kit->synth_control({music::Parameter::rhythm, (!revised && bar == 39) || bar == 55 ? 1.f : 0.f});
       target_percussion = bar < 4 || bar >= bars ? 0 : 1;
       echo.delay(sparse ? .36f : .24f);
+      if (revised) {
+        if (sparse) target_percussion = 0;
+        echo.delay(sparse ? .44f : bar >= 36 && bar < 40 ? .32f - .02f * (bar - 36) : .24f);
+        echo.filter(sparse ? 4000 : bar >= 36 && bar < 40 ? 4200 + 700 * (bar - 36) : 6500);
+      }
     };
     for (std::uint64_t frame = 0; frame < total;) {
       while (next < events.size() && events[next].frame == frame) {
@@ -198,8 +261,17 @@ int main(int argc, char** argv) {
       echo.begin_block();
       for (std::size_t i = 0; i < count; ++i, ++frame) {
         percussion_gain += (target_percussion - percussion_gain) / 960;
-        const auto fade = frame > total - music::sample_rate / 2
+        auto fade = frame > total - music::sample_rate / 2
           ? float(total - frame) / (music::sample_rate / 2) : 1.f;
+        // A half-beat breath before the return. Every stem shares the same
+        // envelope while the instruments and delay continue advancing in time.
+        if (revised) {
+          if (frame >= pause_start - pause_fade_out && frame < pause_start)
+            fade *= float(pause_start - frame) / pause_fade_out;
+          else if (frame >= pause_start && frame < return_start) fade = 0;
+          else if (frame >= return_start && frame < return_start + pause_fade_in)
+            fade *= float(frame - return_start) / pause_fade_in;
+        }
         const auto b = float(bass.render() * (1 - .3 * std::exp(-kick_age / .035)) * 1.3) * fade;
         const auto k = kick.render() * 1.3f * fade;
         const auto p = float(kit_l[i] * percussion_gain * 1.1) * fade;
@@ -226,9 +298,15 @@ int main(int argc, char** argv) {
     }
     std::ofstream notes(prefix + "-sections.txt");
     if (!notes) throw std::runtime_error("Could not write section timings");
-    notes << "Side Street — first arrangement\n116 BPM / F minor / 64 bars\n\n" << std::fixed << std::setprecision(2);
+    notes << (revised ? "Side Street — arrangement v2\n" : "Side Street — first arrangement\n")
+          << "116 BPM / F minor / 64 bars\n\n" << std::fixed << std::setprecision(2);
     if (hook_version != HookVersion::original) notes << "Hook experiment: " << hook_name << "\n\n";
-    for (const auto& cue : sections) notes << cue.bar * 16 * step_seconds << "s  bar " << cue.bar + 1 << "  " << cue.name << '\n';
+    for (const auto& cue : sections) {
+      if (revised && cue.bar == 40) notes << double(pause_start) / music::sample_rate << "s  Last half-beat: pause\n";
+      const auto name = revised && cue.bar == 32 ? "Bass and echo" : revised && cue.bar == 40 ? "Full return" : cue.name;
+      notes << cue.bar * 16 * step_seconds << "s  bar " << cue.bar + 1 << "  " << name << '\n';
+      if (revised && cue.bar == 40) notes << 42 * 16 * step_seconds << "s  bar 43  New melodic answer\n";
+    }
     notes << "\nStems include mix gain, ducking and hook echo; sum them at unity.\n";
     notes.close();
     if (!notes) throw std::runtime_error("Could not finish section timings");

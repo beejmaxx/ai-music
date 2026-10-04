@@ -218,6 +218,20 @@ arrangement are in `examples/first-track.cpp`; the original two-instrument study
 remains available separately. These are working compositions for listening and
 sound development.
 
+An optional second arrangement develops the breakdown and return while keeping
+the original main hook. Bass and sparse hook echoes carry the breakdown, drums
+rebuild gradually, and a half-beat pause precedes the full return. A new two-bar
+melodic answer follows the familiar hook. Render it separately:
+
+```sh
+./build/music-track recordings/side-street-v2 --arrangement v2
+afplay recordings/side-street-v2.wav
+```
+
+The opening 32 bars retain the original arrangement. The cue sheet marks the
+pause and new answer; all four stems include the pause envelope and sum back to
+the mix. The default, or explicit `--arrangement original`, renders version 1.
+
 Side Street also supports two hook experiments. The default render preserves
 the original track; `--hook melody` changes the hook's phrasing, and
 `--hook expression` keeps its notes and timing while changing the articulation
