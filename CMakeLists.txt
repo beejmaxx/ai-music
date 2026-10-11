@@ -52,9 +52,29 @@ add_executable(music-track examples/first-track.cpp)
 target_link_libraries(music-track PRIVATE music_voices music_core)
 target_compile_options(music-track PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(music-bridge-bass examples/bridge-bass.cpp)
+target_link_libraries(music-bridge-bass PRIVATE music_voices music_core)
+target_compile_options(music-bridge-bass PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(music-second-theme examples/second-theme.cpp)
+target_link_libraries(music-second-theme PRIVATE music_voices music_core)
+target_compile_options(music-second-theme PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(music-night-window examples/night-window.cpp)
 target_link_libraries(music-night-window PRIVATE music_voices music_core)
 target_compile_options(music-night-window PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(music-corner-light examples/corner-light.cpp)
+target_link_libraries(music-corner-light PRIVATE music_voices music_core)
+target_compile_options(music-corner-light PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(music-low-glow examples/low-glow.cpp)
+target_link_libraries(music-low-glow PRIVATE music_voices music_core)
+target_compile_options(music-low-glow PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(music-palette-render src/palette_render.cpp)
+target_link_libraries(music-palette-render PRIVATE music_voices music_core)
+target_compile_options(music-palette-render PRIVATE -Wall -Wextra -Wpedantic)
 
 if(AI_MUSIC_MAGENTA)
   include(cmake/Magenta.cmake)
